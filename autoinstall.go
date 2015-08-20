@@ -85,6 +85,9 @@ func parseModuleImports(moduleName string) set.Set {
 			if strings.HasSuffix(filename, "_test.go") {
 				continue
 			}
+			if strings.HasSuffix(filename, "_cgo.go") {
+				continue
+			}
 			for _, importObj := range file.Imports {
 				moduleDepName := importObj.Path.Value
 				// importObj.Path.Value is the parsed literal, including quote marks. Let's kludgily
@@ -135,7 +138,7 @@ func moduleHasUpToDateDependencies(moduleName string, forceRegen bool) bool {
 		isReady := moduleState[moduleDepNameStr] == moduleReady
 		moduleStateMutex.RUnlock()
 		if !isReady {
-			log.Printf("@(dim:%s is missing dep %s)\n", moduleName, moduleDepNameStr)
+			log.Printf("@(warn:Dependency not ready:) %s @(dim:needed by) %s\n", moduleDepNameStr, moduleName)
 			return false
 		}
 		if !moduleHasUpToDateDependencies(moduleDepNameStr, false) {
@@ -208,7 +211,7 @@ func (b *builder) buildModule(moduleName string) {
 	absPath := filepath.Join(srcRoot, moduleName)
 	retCode, err := ctx.QuoteCwd("go-install", absPath, "go", "install")
 	if retCode != 0 {
-		log.Printf("@(error:Failed to build) %s@(error:, return code was %d.)\n", moduleName, retCode)
+		log.Printf("@(error:Failed to build) %s @(dim)(return code was %d)@(r)\n", moduleName, retCode)
 		abort()
 		return
 	}
@@ -260,10 +263,10 @@ func processModuleTriggers() {
 	breakFor:
 		for ifaceModuleName := range moduleNames.Iter() {
 			moduleName := ifaceModuleName.(string)
-			if strings.Contains(moduleName, "/test") {
-				// Skip modules that look like test data
-				continue
-			}
+			// if strings.Contains(moduleName, "/test") {
+			// 	// Skip modules that look like test data
+			// 	continue
+			// }
 			moduleStateMutex.Lock()
 			currState := moduleState[moduleName]
 			if currState == moduleBuilding {
@@ -271,7 +274,7 @@ func processModuleTriggers() {
 				moduleState[moduleName] = moduleBuildingButDirty
 				moduleStateMutex.Unlock()
 			} else if currState == moduleDirtyIdle || currState == moduleReady {
-				log.Printf("@(dim:Queueing rebuild of) %s\n", moduleName)
+				// log.Printf("@(dim:Queueing rebuild of) %s\n", moduleName)
 				moduleState[moduleName] = moduleDirtyQueued
 				moduleStateMutex.Unlock()
 				dirtyModuleQueue <- moduleName
@@ -315,7 +318,7 @@ func processPathTriggers() {
 			// verb = "discovery of"
 			moduleName = filepath.Dir(path)
 		}
-		if !rebuildExts.Contains(filepath.Ext(path)) {
+		if !rebuildExts.Contains(filepath.Ext(path)) || strings.HasSuffix(path, "_test.go") {
 			continue
 		}
 		// log.Printf("@(dim:Triggering module) %s @(dim:due to %s) %s\n", moduleName, verb, path)
@@ -335,6 +338,7 @@ func watchRecursive(relPath string) {
 		return
 	}
 	if stat.IsDir() {
+		// log.Printf("WATCH %s\n", relPath)
 		watcher.Watch(absPath)
 		entries, err := ioutil.ReadDir(absPath)
 		if err != nil {
@@ -355,7 +359,7 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("@(dim){isodate micros} ")
 	log.AddAnsiColorCode("error", 31)
-	log.AddAnsiColorCode("warn", 35)
+	log.AddAnsiColorCode("warn", 33)
 	autorestart.CleanUpChildZombies()
 
 	var err error
