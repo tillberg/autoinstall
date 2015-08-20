@@ -299,6 +299,18 @@ func processPathTriggers() {
 			if err != nil {
 				log.Bail(err)
 			}
+			if ev.IsCreate() {
+				stat, err := os.Stat(path)
+				if err == nil && stat.IsDir() {
+					relPath, err := filepath.Rel(srcRoot, path)
+					if err != nil {
+						log.Printf("@(error:Error resolving relative path from %s to %s: %s)\n", srcRoot, path, err)
+					} else {
+						log.Printf("@(dim:Adding watcher for new directory) %s@(dim:.)\n", relPath)
+						watchRecursive(relPath)
+					}
+				}
+			}
 		case path = <-pathDiscoveryChan:
 			// verb = "discovery of"
 			moduleName = filepath.Dir(path)
