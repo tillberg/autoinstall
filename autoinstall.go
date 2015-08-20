@@ -25,21 +25,18 @@ const moduleReady = 4
 
 var srcRoot = filepath.Join(os.Getenv("GOPATH"), "src")
 var goSrcRoot = filepath.Join(os.Getenv("GOROOT"), "src")
-var dirtyModuleQueue = make(chan string, 3000)
+var dirtyModuleQueue = make(chan string, 10000)
 var moduleState = make(map[string]int)
 var moduleStateMutex sync.RWMutex
-
 var pathDiscoveryChan = make(chan string)
 var moduleTriggerChan = make(chan string)
-
 var pathSkipSet = set.NewSetFromSlice([]interface{}{".git", ".hg", "node_modules"})
 var rebuildExts = set.NewSetFromSlice([]interface{}{".go"})
 var importsMap = make(map[string]set.Set)
 var importsMapMutex sync.RWMutex
-
 var watcher *fsnotify.Watcher
-
 var builders chan *builder
+var moduleHasBeenCheckedOnce = set.NewSet()
 
 type builder struct {
 	ctx *bismuth.ExecContext
@@ -138,7 +135,11 @@ func moduleHasUpToDateDependencies(moduleName string, forceRegen bool) bool {
 		isReady := moduleState[moduleDepNameStr] == moduleReady
 		moduleStateMutex.RUnlock()
 		if !isReady {
-			log.Printf("@(warn:Dependency not ready:) %s @(dim:needed by) %s\n", moduleDepNameStr, moduleName)
+			// Check to see if this dependency even exists
+			// stat, err := os.Stat(filepath.Join(goSrcRoot, moduleDepNameStr))
+			// if err != nil || !stat.IsDir() {
+			// 	log.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
+			// }
 			return false
 		}
 		if !moduleHasUpToDateDependencies(moduleDepNameStr, false) {
@@ -198,7 +199,7 @@ func (b *builder) buildModule(moduleName string) {
 	if !moduleHasUpToDateDependencies(moduleName, true) {
 		// If this module is missing any up-to-date dependecies, send
 		// it to the end of the queue after a brief pause
-		log.Printf("@(dim:Not building) %s @(dim:yet, dependencies not ready.)\n", moduleName)
+		// log.Printf("@(dim:Not building) %s @(dim:yet, dependencies not ready.)\n", moduleName)
 		// go func() {
 		// 	time.Sleep(1000 * time.Millisecond)
 		// 	dirtyModuleQueue <- moduleName
@@ -207,11 +208,13 @@ func (b *builder) buildModule(moduleName string) {
 		return
 	}
 	ctx := b.ctx
-	log.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
+	if !moduleHasBeenCheckedOnce.Add(moduleName) {
+		log.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
+	}
 	absPath := filepath.Join(srcRoot, moduleName)
 	retCode, err := ctx.QuoteCwd("go-install", absPath, "go", "install")
 	if retCode != 0 {
-		log.Printf("@(error:Failed to build) %s @(dim)(return code was %d)@(r)\n", moduleName, retCode)
+		log.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, retCode)
 		abort()
 		return
 	}
@@ -367,9 +370,9 @@ func main() {
 	if err != nil {
 		log.Bail(err)
 	}
-	go watchRecursive("")
 	go processPathTriggers()
 	go processModuleTriggers()
+	watchRecursive("")
 	go autorestart.RestartOnChange()
 	numBuilders := runtime.NumCPU()
 	builders = make(chan *builder, numBuilders)
