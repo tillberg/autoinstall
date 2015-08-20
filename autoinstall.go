@@ -208,7 +208,7 @@ func (b *builder) buildModule(moduleName string) {
 	absPath := filepath.Join(srcRoot, moduleName)
 	retCode, err := ctx.QuoteCwd("go-install", absPath, "go", "install")
 	if retCode != 0 {
-		log.Printf("@(error:Failed to build) %s@(error:.)\n", moduleName)
+		log.Printf("@(error:Failed to build) %s@(error:, return code was %d.)\n", moduleName, retCode)
 		abort()
 		return
 	}
@@ -217,7 +217,7 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
-	log.Printf("@(green:Successfully built) %s@(green:.)\n", moduleName)
+	log.Printf("@(green:Successfully built) %s\n", moduleName)
 	moduleStateMutex.Lock()
 	currState := moduleState[moduleName]
 	if currState == moduleBuildingButDirty {
@@ -271,7 +271,7 @@ func processModuleTriggers() {
 				moduleState[moduleName] = moduleBuildingButDirty
 				moduleStateMutex.Unlock()
 			} else if currState == moduleDirtyIdle || currState == moduleReady {
-				log.Printf("@(dim:Queueing rebuild of) %s@(dim:.)\n", moduleName)
+				log.Printf("@(dim:Queueing rebuild of) %s\n", moduleName)
 				moduleState[moduleName] = moduleDirtyQueued
 				moduleStateMutex.Unlock()
 				dirtyModuleQueue <- moduleName
@@ -306,7 +306,7 @@ func processPathTriggers() {
 					if err != nil {
 						log.Printf("@(error:Error resolving relative path from %s to %s: %s)\n", srcRoot, path, err)
 					} else {
-						log.Printf("@(dim:Adding watcher for new directory) %s@(dim:.)\n", relPath)
+						log.Printf("@(dim:Adding watcher for new directory) %s\n", relPath)
 						watchRecursive(relPath)
 					}
 				}
