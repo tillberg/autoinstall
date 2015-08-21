@@ -331,12 +331,6 @@ func watchRecursive(relPath string) {
 }
 
 func main() {
-	log.EnableMultilineMode()
-	log.EnableColorTemplate()
-	log.SetFlags(0)
-	log.SetPrefix("@(dim){isodate} ")
-	log.AddAnsiColorCode("error", 31)
-	log.AddAnsiColorCode("warn", 33)
 	_, err := flags.ParseArgs(&Opts, os.Args)
 	if err != nil {
 		err2, ok := err.(*flags.Error)
