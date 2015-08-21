@@ -33,7 +33,6 @@ const moduleReady = 4
 
 var goPath = os.Getenv("GOPATH")
 var srcRoot = filepath.Join(goPath, "src")
-var goSrcRoot = filepath.Join(os.Getenv("GOROOT"), "src")
 var dirtyModuleQueue = make(chan string, 10000)
 var moduleState = make(map[string]int)
 var moduleStateMutex sync.RWMutex
@@ -45,40 +44,9 @@ var importsMap = make(map[string]set.Set)
 var importsMapMutex sync.RWMutex
 var watcher *fsnotify.Watcher
 var builders chan *builder
-var stdLibCache = make(map[string]bool)
-var stdLibCacheMutex sync.RWMutex
+var goStdLibPackages set.Set
 var finishedInitialPass = false
 var alwaysBeVerbose bool
-
-type builder struct {
-	ctx *bismuth.ExecContext
-}
-
-func newBuilder() *builder {
-	me := &builder{}
-	me.ctx = bismuth.NewExecContext()
-	me.ctx.Connect()
-	return me
-}
-
-func isStandardLibraryPackage(moduleName string) bool {
-	stdLibCacheMutex.RLock()
-	isInStdLib, ok := stdLibCache[moduleName]
-	stdLibCacheMutex.RUnlock()
-	if !ok {
-		if moduleName == "C" {
-			isInStdLib = true
-		} else {
-			// This is not a perfect method. Also, if GOROOT isn't defined, this will be checking some random paths
-			stat, err := os.Stat(filepath.Join(goSrcRoot, moduleName))
-			isInStdLib = err == nil && stat.IsDir()
-		}
-		stdLibCacheMutex.Lock()
-		stdLibCache[moduleName] = isInStdLib
-		stdLibCacheMutex.Unlock()
-	}
-	return isInStdLib
-}
 
 func parsePackageName(moduleName string) string {
 	fileSet := token.NewFileSet()
@@ -119,7 +87,7 @@ func parseModuleImports(moduleName string) set.Set {
 				// remove the quotes:
 				if len(moduleDepName) > 2 {
 					moduleDepName = moduleDepName[1 : len(moduleDepName)-1]
-					if moduleDepName != moduleName && !isStandardLibraryPackage(moduleDepName) {
+					if moduleDepName != moduleName && !goStdLibPackages.Contains(moduleDepName) {
 						moduleDepNames.Add(moduleDepName)
 					}
 				}
@@ -179,10 +147,10 @@ func moduleHasUpToDateDependencies(moduleName string) bool {
 		isReady := moduleState[moduleDepNameStr] == moduleReady
 		if !isReady {
 			// Check to see if this dependency even exists
-			// stat, err := os.Stat(filepath.Join(goSrcRoot, moduleDepNameStr))
-			// if err != nil || !stat.IsDir() {
-			// 	log.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
-			// }
+			stat, err := os.Stat(filepath.Join(srcRoot, moduleDepNameStr))
+			if err != nil || !stat.IsDir() {
+				log.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
+			}
 			allReady = false
 		}
 	}
@@ -226,6 +194,17 @@ func printStateSummary() {
 
 func beVerbose() bool {
 	return finishedInitialPass || Opts.Verbose
+}
+
+type builder struct {
+	ctx *bismuth.ExecContext
+}
+
+func newBuilder() *builder {
+	me := &builder{}
+	me.ctx = bismuth.NewExecContext()
+	me.ctx.Connect()
+	return me
 }
 
 func (b *builder) buildModule(moduleName string) {
@@ -466,6 +445,11 @@ func main() {
 		log.Printf("Error parsing command-line options: %s\n", err)
 		return
 	}
+	if os.Getenv("GOPATH") == "" {
+		log.Printf("GOPATH is not set in the environment. Please set GOPATH first, then retry.\n")
+		log.Printf("For help setting GOPATH, see https://golang.org/doc/code.html\n")
+		return
+	}
 	if Opts.NoColor {
 		log.DisableColor()
 	}
@@ -480,6 +464,10 @@ func main() {
 	log.Printf("@(dim:go-autoinstall started; beginning first pass of all packages...)\n")
 	if !Opts.Verbose {
 		log.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
+	}
+	goStdLibPackages = set.NewThreadUnsafeSet()
+	for _, s := range goStdLibPackagesSlice {
+		goStdLibPackages.Add(s)
 	}
 	go processPathTriggers()
 	go processModuleTriggers()
