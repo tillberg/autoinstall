@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	set "github.com/deckarep/golang-set"
 	"github.com/howeyc/fsnotify"
 	"github.com/tillberg/ansi-log"
@@ -8,6 +10,7 @@ import (
 	"github.com/tillberg/bismuth"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -23,7 +26,8 @@ const moduleBuilding = 2
 const moduleBuildingButDirty = 3
 const moduleReady = 4
 
-var srcRoot = filepath.Join(os.Getenv("GOPATH"), "src")
+var goPath = os.Getenv("GOPATH")
+var srcRoot = filepath.Join(goPath, "src")
 var goSrcRoot = filepath.Join(os.Getenv("GOROOT"), "src")
 var dirtyModuleQueue = make(chan string, 10000)
 var moduleState = make(map[string]int)
@@ -66,6 +70,20 @@ func isStandardLibraryPackage(moduleName string) bool {
 		stdLibCacheMutex.Unlock()
 	}
 	return isInStdLib
+}
+
+func parsePackageName(moduleName string) string {
+	fileSet := token.NewFileSet()
+	absPath := filepath.Join(srcRoot, moduleName)
+	pkgMap, err := parser.ParseDir(fileSet, absPath, nil, parser.PackageClauseOnly)
+	if err != nil {
+		log.Printf("@(error:Error parsing package name of module) %s@(error::) %s\n", moduleName, err)
+		return ""
+	}
+	for pkgName := range pkgMap {
+		return pkgName
+	}
+	return ""
 }
 
 func parseModuleImports(moduleName string) set.Set {
@@ -180,6 +198,17 @@ func printStateSummary() {
 	log.Printf("@(dim:idle:) %d@(dim:, queued:) %d@(dim:, building:) %d@(dim:, building+dirty:) %d@(dim:, ready:) %d\n", counts[0], counts[1], counts[2], counts[3], counts[4])
 }
 
+func calcSha256(path string) string {
+	file, err := os.Open(path)
+	defer file.Close()
+	if err != nil {
+		return ""
+	}
+	hash := sha256.New()
+	io.Copy(hash, file)
+	return string(hash.Sum([]byte{}))
+}
+
 func (b *builder) buildModule(moduleName string) {
 	defer func() {
 		builders <- b
@@ -207,11 +236,22 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
+	isFirstModuleBuild := moduleHasBeenCheckedOnce.Add(moduleName)
 	ctx := b.ctx
-	if !moduleHasBeenCheckedOnce.Add(moduleName) {
+	if !isFirstModuleBuild {
 		log.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
 	}
 	absPath := filepath.Join(srcRoot, moduleName)
+	packageName := parsePackageName(moduleName)
+	var destPath string
+	if packageName == "main" {
+		exeName := filepath.Dir(moduleName)
+		destPath = filepath.Join("bin", exeName)
+	} else {
+		destPath = filepath.Join("pkg", fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH), moduleName) + ".a"
+	}
+	absDestPath := filepath.Join(goPath, destPath)
+	hashBefore := calcSha256(absDestPath)
 	retCode, err := ctx.QuoteCwd("go-install", absPath, "go", "install")
 	if retCode != 0 {
 		log.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, retCode)
@@ -223,7 +263,11 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
-	log.Printf("@(green:Successfully built) %s\n", moduleName)
+	hashAfter := calcSha256(absDestPath)
+	if !isFirstModuleBuild || hashBefore != hashAfter {
+		log.Printf("@(green:Successfully built) %s @(dim:->) %s\n", moduleName, destPath)
+	}
+
 	moduleStateMutex.Lock()
 	currState := moduleState[moduleName]
 	if currState == moduleBuildingButDirty {
