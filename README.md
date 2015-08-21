@@ -1,4 +1,4 @@
-# go-autoinstall
+# autoinstall
 
 Continuously go-installs all packages in GOPATH
 
@@ -7,7 +7,7 @@ Continuously go-installs all packages in GOPATH
 You must already have Go installed and have GOPATH set in your environment. Then just run:
 
 ```sh
-$ go install github.com/tillberg/go-autoinstall
+$ go install github.com/tillberg/autoinstall
 $ $GOPATH/bin/autoinstall
 ```
 

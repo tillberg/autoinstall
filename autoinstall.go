@@ -362,7 +362,7 @@ func main() {
 		log.Printf("@(error:Error initializing fsnotify Watcher: %s)\n", err)
 		return
 	}
-	log.Printf("@(dim:go-autoinstall started; beginning first pass of all packages...)\n")
+	log.Printf("@(dim:autoinstall started; beginning first pass of all packages...)\n")
 	if !Opts.Verbose {
 		log.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
