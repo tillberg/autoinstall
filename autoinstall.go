@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
 	"fmt"
 	set "github.com/deckarep/golang-set"
 	"github.com/howeyc/fsnotify"
@@ -11,7 +10,6 @@ import (
 	"github.com/tillberg/bismuth"
 	"go/parser"
 	"go/token"
-	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -224,17 +222,6 @@ func printStateSummary() {
 	log.Printf("@(dim:idle:) %d@(dim:, queued:) %d@(dim:, building:) %d@(dim:, building+dirty:) %d@(dim:, ready:) %d\n", counts[0], counts[1], counts[2], counts[3], counts[4])
 }
 
-func calcSha256(path string) string {
-	file, err := os.Open(path)
-	defer file.Close()
-	if err != nil {
-		return ""
-	}
-	hash := sha256.New()
-	io.Copy(hash, file)
-	return string(hash.Sum([]byte{}))
-}
-
 func beVerbose() bool {
 	return finishedInitialPass || Opts.Verbose
 }
@@ -280,7 +267,7 @@ func (b *builder) buildModule(moduleName string) {
 		destPath = filepath.Join("pkg", fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH), moduleName) + ".a"
 	}
 	absDestPath := filepath.Join(goPath, destPath)
-	hashBefore := calcSha256(absDestPath)
+	statBefore, _ := os.Stat(absDestPath)
 	var err error
 	var retCode int
 	if beVerbose() {
@@ -300,9 +287,9 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
-	hashAfter := calcSha256(absDestPath)
-	if beVerbose() || hashBefore != hashAfter {
-		log.Printf("@(green:Successfully built) %s @(dim:->) %s\n", moduleName, destPath)
+	statAfter, _ := os.Stat(absDestPath)
+	if beVerbose() || (statBefore == nil && statAfter != nil) {
+		log.Printf("@(green:Successfully built) %s\n", moduleName)
 	}
 
 	moduleStateMutex.Lock()
