@@ -5,6 +5,7 @@ import (
 	"fmt"
 	set "github.com/deckarep/golang-set"
 	"github.com/howeyc/fsnotify"
+	"github.com/jessevdk/go-flags"
 	"github.com/tillberg/ansi-log"
 	"github.com/tillberg/autorestart"
 	"github.com/tillberg/bismuth"
@@ -19,6 +20,10 @@ import (
 	"sync"
 	"time"
 )
+
+var Opts struct {
+	Verbose bool `short:"v" long:"verbose" description:"Show verbose debug information"`
+}
 
 const moduleDirtyIdle = 0
 const moduleDirtyQueued = 1
@@ -43,6 +48,7 @@ var builders chan *builder
 var stdLibCache = make(map[string]bool)
 var stdLibCacheMutex sync.RWMutex
 var finishedInitialPass = false
+var alwaysBeVerbose bool
 
 type builder struct {
 	ctx *bismuth.ExecContext
@@ -230,7 +236,7 @@ func calcSha256(path string) string {
 }
 
 func beVerbose() bool {
-	return finishedInitialPass //|| Opts.Verbose
+	return finishedInitialPass || Opts.Verbose
 }
 
 func (b *builder) buildModule(moduleName string) {
@@ -330,7 +336,9 @@ func processBuildQueue() {
 				finishedInitialPass = true
 				log.Printf("@(dim:Finished initial pass of all packages.)\n")
 				log.Printf("@(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", counts[moduleReady], counts[moduleDirtyIdle])
-				log.Printf("@(dim:Use) --verbose @(dim:to show all build messages during startup.)\n")
+				if !Opts.Verbose {
+					log.Printf("@(dim:Use) --verbose @(dim:to show all build messages during startup.)\n")
+				}
 			}
 		}
 	}
@@ -452,15 +460,19 @@ func main() {
 	log.EnableMultilineMode()
 	log.EnableColorTemplate()
 	log.SetFlags(0)
-	log.SetPrefix("@(dim){isodate micros} ")
+	log.SetPrefix("@(dim){isodate} ")
 	log.AddAnsiColorCode("error", 31)
 	log.AddAnsiColorCode("warn", 33)
 	autorestart.CleanUpChildZombies()
-
-	var err error
+	_, err := flags.ParseArgs(&Opts, os.Args)
+	if err != nil {
+		log.Printf("Error parsing command-line options: %s\n", err)
+		return
+	}
 	watcher, err = fsnotify.NewWatcher()
 	if err != nil {
-		log.Bail(err)
+		log.Printf("@(error:Error initializing fsnotify Watcher: %s)\n", err)
+		return
 	}
 	go processPathTriggers()
 	go processModuleTriggers()
