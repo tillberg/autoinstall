@@ -286,8 +286,8 @@ func processPathTriggers() {
 					if err != nil {
 						log.Printf("@(error:Error resolving relative path from %s to %s: %s)\n", srcRoot, path, err)
 					} else {
-						log.Printf("@(dim:Adding watcher for new directory) %s\n", relPath)
-						watchRecursive(relPath)
+						log.Printf("@(dim:Watching new directory) %s\n", relPath)
+						go watchRecursive(relPath)
 					}
 				}
 			}
