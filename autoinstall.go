@@ -346,7 +346,7 @@ func main() {
 		log.Printf("Error parsing command-line options: %s\n", err)
 		return
 	}
-	if os.Getenv("GOPATH") == "" {
+	if goPath == "" {
 		log.Printf("GOPATH is not set in the environment. Please set GOPATH first, then retry.\n")
 		log.Printf("For help setting GOPATH, see https://golang.org/doc/code.html\n")
 		return
