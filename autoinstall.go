@@ -40,7 +40,9 @@ var importsMap = make(map[string]set.Set)
 var importsMapMutex sync.RWMutex
 var watcher *fsnotify.Watcher
 var builders chan *builder
-var moduleHasBeenCheckedOnce = set.NewSet()
+var stdLibCache = make(map[string]bool)
+var stdLibCacheMutex sync.RWMutex
+var finishedInitialPass = false
 
 type builder struct {
 	ctx *bismuth.ExecContext
@@ -91,7 +93,9 @@ func parseModuleImports(moduleName string) set.Set {
 	absPath := filepath.Join(srcRoot, moduleName)
 	pkgMap, err := parser.ParseDir(fileSet, absPath, nil, parser.ImportsOnly)
 	if err != nil {
-		log.Printf("@(error:Error parsing import of module) %s@(error::) %s\n", moduleName, err)
+		if beVerbose() {
+			log.Printf("@(error:Error parsing import of module) %s@(error::) %s\n", moduleName, err)
+		}
 		return nil
 	}
 	moduleDepNames := set.NewSet()
@@ -138,34 +142,45 @@ func getImportsForModule(moduleName string, forceRegen bool) set.Set {
 	return moduleNames
 }
 
-var stdLibCache = make(map[string]bool)
-var stdLibCacheMutex sync.RWMutex
-
-func moduleHasUpToDateDependencies(moduleName string, forceRegen bool) bool {
-	moduleDepNames := getImportsForModule(moduleName, forceRegen)
+func moduleHasUpToDateDependencies(moduleName string) bool {
+	allDepNames := set.NewSet()
+	moduleDepNames := getImportsForModule(moduleName, true)
 	if moduleDepNames == nil {
 		return false
 	}
-	// log.Printf("module %s depends on %s\n", moduleName, moduleNames.ToSlice())
+	stack := []string{}
 	for moduleDepName := range moduleDepNames.Iter() {
+		stack = append(stack, moduleDepName.(string))
+	}
+	for len(stack) > 0 {
+		curr := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if allDepNames.Add(curr) {
+			nexts := getImportsForModule(moduleName, false)
+			if nexts != nil {
+				for next := range nexts.Iter() {
+					stack = append(stack, next.(string))
+				}
+			}
+		}
+	}
+	allReady := true
+	moduleStateMutex.RLock()
+	defer moduleStateMutex.RUnlock()
+	for moduleDepName := range allDepNames.Iter() {
 		moduleDepNameStr := moduleDepName.(string)
-		moduleStateMutex.RLock()
+		// log.Printf("module %s depends on %s\n", moduleName, moduleNames.ToSlice())
 		isReady := moduleState[moduleDepNameStr] == moduleReady
-		moduleStateMutex.RUnlock()
 		if !isReady {
 			// Check to see if this dependency even exists
 			// stat, err := os.Stat(filepath.Join(goSrcRoot, moduleDepNameStr))
 			// if err != nil || !stat.IsDir() {
 			// 	log.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
 			// }
-			return false
-		}
-		if !moduleHasUpToDateDependencies(moduleDepNameStr, false) {
-			log.Printf("  (required by %s)\n", moduleName)
-			return false
+			allReady = false
 		}
 	}
-	return true
+	return allReady
 }
 
 func triggerDependenciesOfModule(moduleName string) {
@@ -184,7 +199,7 @@ func triggerDependenciesOfModule(moduleName string) {
 	}
 }
 
-func printStateSummary() {
+func getStateSummary() map[int]int {
 	moduleStateMutex.RLock()
 	counts := make(map[int]int)
 	for name, state := range moduleState {
@@ -195,6 +210,11 @@ func printStateSummary() {
 		// }
 	}
 	moduleStateMutex.RUnlock()
+	return counts
+}
+
+func printStateSummary() {
+	counts := getStateSummary()
 	log.Printf("@(dim:idle:) %d@(dim:, queued:) %d@(dim:, building:) %d@(dim:, building+dirty:) %d@(dim:, ready:) %d\n", counts[0], counts[1], counts[2], counts[3], counts[4])
 }
 
@@ -207,6 +227,10 @@ func calcSha256(path string) string {
 	hash := sha256.New()
 	io.Copy(hash, file)
 	return string(hash.Sum([]byte{}))
+}
+
+func beVerbose() bool {
+	return finishedInitialPass //|| Opts.Verbose
 }
 
 func (b *builder) buildModule(moduleName string) {
@@ -225,7 +249,7 @@ func (b *builder) buildModule(moduleName string) {
 	moduleStateMutex.Lock()
 	moduleState[moduleName] = moduleBuilding
 	moduleStateMutex.Unlock()
-	if !moduleHasUpToDateDependencies(moduleName, true) {
+	if !moduleHasUpToDateDependencies(moduleName) {
 		// If this module is missing any up-to-date dependecies, send
 		// it to the end of the queue after a brief pause
 		// log.Printf("@(dim:Not building) %s @(dim:yet, dependencies not ready.)\n", moduleName)
@@ -236,25 +260,32 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
-	isFirstModuleBuild := moduleHasBeenCheckedOnce.Add(moduleName)
 	ctx := b.ctx
-	if !isFirstModuleBuild {
+	if beVerbose() {
 		log.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
 	}
 	absPath := filepath.Join(srcRoot, moduleName)
 	packageName := parsePackageName(moduleName)
 	var destPath string
 	if packageName == "main" {
-		exeName := filepath.Dir(moduleName)
+		exeName := filepath.Base(filepath.Dir(moduleName))
 		destPath = filepath.Join("bin", exeName)
 	} else {
 		destPath = filepath.Join("pkg", fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH), moduleName) + ".a"
 	}
 	absDestPath := filepath.Join(goPath, destPath)
 	hashBefore := calcSha256(absDestPath)
-	retCode, err := ctx.QuoteCwd("go-install", absPath, "go", "install")
+	var err error
+	var retCode int
+	if beVerbose() {
+		retCode, err = ctx.QuoteCwd("go-install", absPath, "go", "install")
+	} else {
+		_, _, retCode, err = ctx.RunCwd(absPath, "go", "install")
+	}
 	if retCode != 0 {
-		log.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, retCode)
+		if beVerbose() {
+			log.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, retCode)
+		}
 		abort()
 		return
 	}
@@ -264,7 +295,7 @@ func (b *builder) buildModule(moduleName string) {
 		return
 	}
 	hashAfter := calcSha256(absDestPath)
-	if !isFirstModuleBuild || hashBefore != hashAfter {
+	if beVerbose() || hashBefore != hashAfter {
 		log.Printf("@(green:Successfully built) %s @(dim:->) %s\n", moduleName, destPath)
 	}
 
@@ -283,10 +314,25 @@ func (b *builder) buildModule(moduleName string) {
 }
 
 func processBuildQueue() {
+	neverChan := make(<-chan time.Time)
 	for {
-		moduleName := <-dirtyModuleQueue
-		b := <-builders
-		go b.buildModule(moduleName)
+		timeoutChan := neverChan
+		if !finishedInitialPass {
+			timeoutChan = time.After(500 * time.Millisecond)
+		}
+		select {
+		case moduleName := <-dirtyModuleQueue:
+			b := <-builders
+			go b.buildModule(moduleName)
+		case <-timeoutChan:
+			counts := getStateSummary()
+			if counts[moduleDirtyQueued] == 0 && counts[moduleBuilding] == 0 && counts[moduleBuildingButDirty] == 0 {
+				finishedInitialPass = true
+				log.Printf("@(dim:Finished initial pass of all packages.)\n")
+				log.Printf("@(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", counts[moduleReady], counts[moduleDirtyIdle])
+				log.Printf("@(dim:Use) --verbose @(dim:to show all build messages during startup.)\n")
+			}
+		}
 	}
 }
 
@@ -317,11 +363,13 @@ func processModuleTriggers() {
 			moduleStateMutex.Lock()
 			currState := moduleState[moduleName]
 			if currState == moduleBuilding {
-				log.Printf("@(dim:Marking in-progress build of) %s @(dim:dirty.)\n", moduleName)
+				if beVerbose() {
+					log.Printf("@(dim:Marking in-progress build of) %s @(dim:dirty.)\n", moduleName)
+				}
 				moduleState[moduleName] = moduleBuildingButDirty
 				moduleStateMutex.Unlock()
 			} else if currState == moduleDirtyIdle || currState == moduleReady {
-				// log.Printf("@(dim:Queueing rebuild of) %s\n", moduleName)
+				// log.Printf("@(dim:Queueing build of) %s\n", moduleName)
 				moduleState[moduleName] = moduleDirtyQueued
 				moduleStateMutex.Unlock()
 				dirtyModuleQueue <- moduleName
@@ -417,6 +465,7 @@ func main() {
 	go processPathTriggers()
 	go processModuleTriggers()
 	watchRecursive("")
+	time.Sleep(100 * time.Millisecond)
 	go autorestart.RestartOnChange()
 	numBuilders := runtime.NumCPU()
 	builders = make(chan *builder, numBuilders)
