@@ -20,7 +20,9 @@ import (
 )
 
 var Opts struct {
-	Verbose bool `short:"v" long:"verbose" description:"Show verbose debug information"`
+	Verbose     bool `short:"v" long:"verbose" description:"Show verbose debug information"`
+	AutoRestart bool `long:"auto-restart" description:"Restart self when updated (for dev use)"`
+	NoColor     bool `long:"no-color" description:"Disable ANSI colors"`
 }
 
 const moduleDirtyIdle = 0
@@ -267,7 +269,11 @@ func (b *builder) buildModule(moduleName string) {
 		destPath = filepath.Join("pkg", fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH), moduleName) + ".a"
 	}
 	absDestPath := filepath.Join(goPath, destPath)
-	statBefore, _ := os.Stat(absDestPath)
+	var destExistedBefore bool
+	if !beVerbose() {
+		statBefore, _ := os.Stat(absDestPath)
+		destExistedBefore = statBefore != nil
+	}
 	var err error
 	var retCode int
 	if beVerbose() {
@@ -287,8 +293,12 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
-	statAfter, _ := os.Stat(absDestPath)
-	if beVerbose() || (statBefore == nil && statAfter != nil) {
+	var forceBuildMessageDisplay bool
+	if !beVerbose() && !destExistedBefore {
+		statAfter, _ := os.Stat(absDestPath)
+		forceBuildMessageDisplay = statAfter != nil
+	}
+	if beVerbose() || forceBuildMessageDisplay {
 		log.Printf("@(green:Successfully built) %s\n", moduleName)
 	}
 
@@ -323,9 +333,6 @@ func processBuildQueue() {
 				finishedInitialPass = true
 				log.Printf("@(dim:Finished initial pass of all packages.)\n")
 				log.Printf("@(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", counts[moduleReady], counts[moduleDirtyIdle])
-				if !Opts.Verbose {
-					log.Printf("@(dim:Use) --verbose @(dim:to show all build messages during startup.)\n")
-				}
 			}
 		}
 	}
@@ -450,22 +457,37 @@ func main() {
 	log.SetPrefix("@(dim){isodate} ")
 	log.AddAnsiColorCode("error", 31)
 	log.AddAnsiColorCode("warn", 33)
-	autorestart.CleanUpChildZombies()
 	_, err := flags.ParseArgs(&Opts, os.Args)
 	if err != nil {
+		err2, ok := err.(*flags.Error)
+		if ok && err2.Type == flags.ErrHelp {
+			return
+		}
 		log.Printf("Error parsing command-line options: %s\n", err)
 		return
+	}
+	if Opts.NoColor {
+		log.DisableColor()
+	}
+	if Opts.AutoRestart {
+		autorestart.CleanUpChildZombiesQuietly()
 	}
 	watcher, err = fsnotify.NewWatcher()
 	if err != nil {
 		log.Printf("@(error:Error initializing fsnotify Watcher: %s)\n", err)
 		return
 	}
+	log.Printf("@(dim:go-autoinstall started; beginning first pass of all packages...)\n")
+	if !Opts.Verbose {
+		log.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
+	}
 	go processPathTriggers()
 	go processModuleTriggers()
 	watchRecursive("")
 	time.Sleep(100 * time.Millisecond)
-	go autorestart.RestartOnChange()
+	if Opts.AutoRestart {
+		go autorestart.RestartOnChange()
+	}
 	numBuilders := runtime.NumCPU()
 	builders = make(chan *builder, numBuilders)
 	for i := 0; i < numBuilders; i++ {
