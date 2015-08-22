@@ -36,10 +36,21 @@ func (b *builder) buildModule(moduleName string) {
 	moduleStateMutex.Lock()
 	moduleState[moduleName] = moduleBuilding
 	moduleStateMutex.Unlock()
-	if !moduleHasUpToDateDependencies(moduleName) {
+	missingDeps := listMissingDependencies(moduleName)
+	if missingDeps == nil || len(missingDeps) > 0 {
 		// If this module is missing any up-to-date dependecies, send
 		// it to the end of the queue after a brief pause
-		// log.Printf("@(dim:Not building) %s @(dim:yet, dependencies not ready.)\n", moduleName)
+		if missingDeps != nil && beVerbose() {
+			etAlStr := ""
+			if len(missingDeps) > 1 {
+				pluralStr := "s"
+				if len(missingDeps) == 2 {
+					pluralStr = ""
+				}
+				etAlStr = log.Colorify(fmt.Sprintf("@(dim:, and) %d @(dim:other%s)", len(missingDeps)-1, pluralStr))
+			}
+			log.Printf("@(dim:Not building) %s@(dim:;) %s @(dim:not ready)%s@(dim:.)\n", moduleName, missingDeps[0], etAlStr)
+		}
 		// go func() {
 		//  time.Sleep(1000 * time.Millisecond)
 		//  dirtyModuleQueue <- moduleName

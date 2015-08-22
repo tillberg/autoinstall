@@ -114,11 +114,11 @@ func getImportsForModule(moduleName string, forceRegen bool) set.Set {
 	return moduleNames
 }
 
-func moduleHasUpToDateDependencies(moduleName string) bool {
+func listMissingDependencies(moduleName string) []string {
 	allDepNames := set.NewSet()
 	moduleDepNames := getImportsForModule(moduleName, true)
 	if moduleDepNames == nil {
-		return false
+		return nil
 	}
 	stack := []string{}
 	for moduleDepName := range moduleDepNames.Iter() {
@@ -136,7 +136,7 @@ func moduleHasUpToDateDependencies(moduleName string) bool {
 			}
 		}
 	}
-	allReady := true
+	notReady := []string{}
 	moduleStateMutex.RLock()
 	defer moduleStateMutex.RUnlock()
 	for moduleDepName := range allDepNames.Iter() {
@@ -151,10 +151,10 @@ func moduleHasUpToDateDependencies(moduleName string) bool {
 					log.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
 				}
 			}
-			allReady = false
+			notReady = append(notReady, moduleDepNameStr)
 		}
 	}
-	return allReady
+	return notReady
 }
 
 func triggerDependenciesOfModule(moduleName string) {
