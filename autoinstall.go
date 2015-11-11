@@ -1,11 +1,6 @@
 package main
 
 import (
-	set "github.com/deckarep/golang-set"
-	"github.com/howeyc/fsnotify"
-	"github.com/jessevdk/go-flags"
-	"github.com/tillberg/ansi-log"
-	"github.com/tillberg/autorestart"
 	"go/parser"
 	"go/token"
 	"io/ioutil"
@@ -15,6 +10,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	set "github.com/deckarep/golang-set"
+	"github.com/jessevdk/go-flags"
+	log "github.com/tillberg/ansi-log"
+	"github.com/tillberg/autorestart"
+	"gopkg.in/fsnotify.v1"
 )
 
 var Opts struct {
@@ -209,7 +210,7 @@ func processBuildQueue() {
 			go b.buildModule(moduleName)
 		case <-timeoutChan:
 			counts := getStateSummary()
-			if counts[moduleDirtyQueued] == 0 && counts[moduleBuilding] == 0 && counts[moduleBuildingButDirty] == 0 {
+			if counts[moduleDirtyQueued] == 0 && counts[moduleBuilding] == 0 && counts[moduleBuildingButDirty] == 0 && (counts[moduleReady] > 0 || counts[moduleDirtyIdle] > 0) {
 				finishedInitialPass = true
 				log.Printf("@(dim:Finished initial pass of all packages.)\n")
 				log.Printf("@(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", counts[moduleReady], counts[moduleDirtyIdle])
@@ -268,10 +269,10 @@ func processPathTriggers() {
 		var path string
 		var moduleName string
 		select {
-		case err := <-watcher.Error:
+		case err := <-watcher.Errors:
 			log.Printf("Watcher error: %s\n", err)
 			continue
-		case ev := <-watcher.Event:
+		case ev := <-watcher.Events:
 			path = ev.Name
 			// verb = "change in"
 			var err error
@@ -279,7 +280,7 @@ func processPathTriggers() {
 			if err != nil {
 				log.Bail(err)
 			}
-			if ev.IsCreate() {
+			if ev.Op&fsnotify.Create != 0 {
 				stat, err := os.Stat(path)
 				if err == nil && stat.IsDir() {
 					relPath, err := filepath.Rel(srcRoot, path)
@@ -316,14 +317,18 @@ func watchRecursive(relPath string) {
 	}
 	if stat.IsDir() {
 		// log.Printf("WATCH %s\n", relPath)
-		watcher.Watch(absPath)
+		watcher.Add(absPath)
 		entries, err := ioutil.ReadDir(absPath)
 		if err != nil {
 			log.Printf("Error reading directory %s: %s\n", absPath, err)
 			return
 		}
 		for _, entry := range entries {
-			watchRecursive(filepath.Join(relPath, entry.Name()))
+			name := entry.Name()
+			if name == "_workspace" {
+				continue // kludge to avoid recursing into Godeps workspaces
+			}
+			watchRecursive(filepath.Join(relPath, name))
 		}
 	} else {
 		pathDiscoveryChan <- relPath
@@ -367,7 +372,7 @@ func main() {
 	go processPathTriggers()
 	go processModuleTriggers()
 	watchRecursive("")
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	if Opts.AutoRestart {
 		go autorestart.RestartOnChange()
 	}

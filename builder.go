@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
-	"github.com/tillberg/ansi-log"
-	"github.com/tillberg/bismuth"
 	"os"
 	"path/filepath"
 	"runtime"
+
+	log "github.com/tillberg/ansi-log"
+	"github.com/tillberg/bismuth"
 )
 
 type builder struct {
