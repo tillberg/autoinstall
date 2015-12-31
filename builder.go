@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	log "github.com/tillberg/ansi-log"
+	"github.com/tillberg/ansi-log"
 	"github.com/tillberg/bismuth"
 )
 
@@ -28,40 +28,51 @@ func (b *builder) buildModule(moduleName string) {
 	abort := func() {
 		moduleStateMutex.Lock()
 		currState := moduleState[moduleName]
-		moduleState[moduleName] = moduleDirtyIdle
+		moduleState[moduleName] = ModuleDirtyIdle
 		moduleStateMutex.Unlock()
-		if currState == moduleBuildingButDirty {
+		if currState == ModuleBuildingButDirty {
 			moduleTriggerChan <- moduleName
 		}
 	}
-	moduleStateMutex.Lock()
-	moduleState[moduleName] = moduleBuilding
-	moduleStateMutex.Unlock()
-	missingDeps := listMissingDependencies(moduleName)
-	if missingDeps == nil || len(missingDeps) > 0 {
-		// If this module is missing any up-to-date dependecies, send
-		// it to the end of the queue after a brief pause
-		if missingDeps != nil && beVerbose() {
-			etAlStr := ""
-			if len(missingDeps) > 1 {
-				pluralStr := "s"
-				if len(missingDeps) == 2 {
-					pluralStr = ""
+	depsAreReady := func(includeTests bool) bool {
+		missingDeps := listMissingDependencies(moduleName, includeTests)
+		if missingDeps == nil || len(missingDeps) > 0 {
+			// If this module is missing any up-to-date dependecies, send
+			// it to the end of the queue after a brief pause
+			if missingDeps != nil && beVerbose() {
+				etAlStr := ""
+				if len(missingDeps) > 1 {
+					pluralStr := "s"
+					if len(missingDeps) == 2 {
+						pluralStr = ""
+					}
+					etAlStr = alog.Colorify(fmt.Sprintf("@(dim:, and) %d @(dim:other%s)", len(missingDeps)-1, pluralStr))
 				}
-				etAlStr = log.Colorify(fmt.Sprintf("@(dim:, and) %d @(dim:other%s)", len(missingDeps)-1, pluralStr))
+				verb := "building"
+				if includeTests {
+					verb = "testing"
+				}
+				alog.Printf("@(dim:Not %s) %s@(dim:;) %s @(dim:not ready)%s@(dim:.)\n", verb, moduleName, missingDeps[0], etAlStr)
 			}
-			log.Printf("@(dim:Not building) %s@(dim:;) %s @(dim:not ready)%s@(dim:.)\n", moduleName, missingDeps[0], etAlStr)
+			// go func() {
+			//  time.Sleep(1000 * time.Millisecond)
+			//  dirtyModuleQueue <- moduleName
+			// }()
+			return false
 		}
-		// go func() {
-		//  time.Sleep(1000 * time.Millisecond)
-		//  dirtyModuleQueue <- moduleName
-		// }()
+		return true
+	}
+
+	moduleStateMutex.Lock()
+	moduleState[moduleName] = ModuleBuilding
+	moduleStateMutex.Unlock()
+	if !depsAreReady(false) {
 		abort()
 		return
 	}
 	ctx := b.ctx
 	if beVerbose() {
-		log.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
+		alog.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
 	}
 	absPath := filepath.Join(srcRoot, moduleName)
 	packageName := parsePackageName(moduleName)
@@ -87,13 +98,13 @@ func (b *builder) buildModule(moduleName string) {
 	}
 	if retCode != 0 {
 		if beVerbose() {
-			log.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, retCode)
+			alog.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, retCode)
 		}
 		abort()
 		return
 	}
 	if err != nil {
-		log.Printf("@(error:Failed to install %s@(error:: %s)\n", moduleName, err)
+		alog.Printf("@(error:Failed to install) %s@(error:: %s)\n", moduleName, err)
 		abort()
 		return
 	}
@@ -103,19 +114,29 @@ func (b *builder) buildModule(moduleName string) {
 		forceBuildMessageDisplay = statAfter != nil
 	}
 	if beVerbose() || forceBuildMessageDisplay {
-		log.Printf("@(green:Successfully built) %s\n", moduleName)
+		alog.Printf("@(green:Successfully built) %s\n", moduleName)
 	}
 
 	moduleStateMutex.Lock()
 	currState := moduleState[moduleName]
-	if currState == moduleBuildingButDirty {
-		moduleState[moduleName] = moduleDirtyIdle
+	if currState == ModuleBuildingButDirty {
+		moduleState[moduleName] = ModuleDirtyIdle
 		moduleStateMutex.Unlock()
 		moduleTriggerChan <- moduleName
 	} else {
-		moduleState[moduleName] = moduleReady
+		moduleState[moduleName] = ModuleReady
 		moduleStateMutex.Unlock()
 	}
+
 	// printStateSummary()
 	go triggerDependenciesOfModule(moduleName)
+
+	if runTests() && packageHasTests(moduleName) && depsAreReady(true) {
+		alog.Printf("@(dim:Testing) %s@(dim:...)\n", moduleName)
+		if _, err := ctx.QuoteCwd("test-"+moduleName, absPath, "go", "test"); err != nil {
+			alog.Printf("@(error:Failed to run tests for) %s@(error:: %s)\n", moduleName, err)
+			abort()
+			return
+		}
+	}
 }

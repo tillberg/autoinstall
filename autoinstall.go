@@ -13,31 +13,37 @@ import (
 
 	set "github.com/deckarep/golang-set"
 	"github.com/jessevdk/go-flags"
-	log "github.com/tillberg/ansi-log"
+	"github.com/tillberg/ansi-log"
 	"github.com/tillberg/autorestart"
 	"gopkg.in/fsnotify.v1"
 )
 
 var Opts struct {
-	Verbose     bool `short:"v" long:"verbose" description:"Show verbose debug information"`
-	AutoRestart bool `long:"auto-restart" description:"Restart self when updated (for dev use)"`
-	NoColor     bool `long:"no-color" description:"Disable ANSI colors"`
+	Verbose      bool `short:"v" long:"verbose" description:"Show verbose debug information"`
+	AutoRestart  bool `long:"auto-restart" description:"Restart self when updated (for dev use)"`
+	NoColor      bool `long:"no-color" description:"Disable ANSI colors"`
+	MaxWorkers   int  `long:"max-workers" description:"Max number of build workers"`
+	DisableTests bool `long:"disable-tests" description:"Don't try to run 'go test' after rebuilding packages"`
 }
 
-const moduleDirtyIdle = 0
-const moduleDirtyQueued = 1
-const moduleBuilding = 2
-const moduleBuildingButDirty = 3
-const moduleReady = 4
+type ModuleState int
+
+const (
+	ModuleDirtyIdle ModuleState = iota
+	ModuleDirtyQueued
+	ModuleBuilding
+	ModuleBuildingButDirty
+	ModuleReady
+)
 
 var goPath = os.Getenv("GOPATH")
 var srcRoot = filepath.Join(goPath, "src")
 var dirtyModuleQueue = make(chan string, 10000)
-var moduleState = make(map[string]int)
+var moduleState = make(map[string]ModuleState)
 var moduleStateMutex sync.RWMutex
 var pathDiscoveryChan = make(chan string)
 var moduleTriggerChan = make(chan string)
-var pathSkipSet = set.NewSetFromSlice([]interface{}{".git", ".hg", "node_modules"})
+var pathSkipSet = set.NewSetFromSlice([]interface{}{".git", ".hg", "node_modules", "data"})
 var rebuildExts = set.NewSetFromSlice([]interface{}{".go"})
 var importsMap = make(map[string]set.Set)
 var importsMapMutex sync.RWMutex
@@ -52,7 +58,7 @@ func parsePackageName(moduleName string) string {
 	absPath := filepath.Join(srcRoot, moduleName)
 	pkgMap, err := parser.ParseDir(fileSet, absPath, nil, parser.PackageClauseOnly)
 	if err != nil {
-		log.Printf("@(error:Error parsing package name of module) %s@(error::) %s\n", moduleName, err)
+		alog.Printf("@(error:Error parsing package name of module) %s@(error::) %s\n", moduleName, err)
 		return ""
 	}
 	for pkgName := range pkgMap {
@@ -61,20 +67,36 @@ func parsePackageName(moduleName string) string {
 	return ""
 }
 
-func parseModuleImports(moduleName string) set.Set {
+func packageHasTests(moduleName string) bool {
+	absPath := filepath.Join(srcRoot, moduleName)
+	entries, err := ioutil.ReadDir(absPath)
+	if err != nil {
+		alog.Printf("Error reading directory %s: %s\n", absPath, err)
+		return false
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, "_test.go") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseModuleImports(moduleName string, includeTests bool) set.Set {
 	fileSet := token.NewFileSet()
 	absPath := filepath.Join(srcRoot, moduleName)
 	pkgMap, err := parser.ParseDir(fileSet, absPath, nil, parser.ImportsOnly)
 	if err != nil {
 		if beVerbose() {
-			log.Printf("@(error:Error parsing import of module) %s@(error::) %s\n", moduleName, err)
+			alog.Printf("@(error:Error parsing import of module) %s@(error::) %s\n", moduleName, err)
 		}
 		return nil
 	}
 	moduleDepNames := set.NewSet()
 	for _, pkg := range pkgMap {
 		for filename, file := range pkg.Files {
-			if strings.HasSuffix(filename, "_test.go") {
+			if !includeTests && strings.HasSuffix(filename, "_test.go") {
 				continue
 			}
 			if strings.HasSuffix(filename, "_cgo.go") {
@@ -96,7 +118,7 @@ func parseModuleImports(moduleName string) set.Set {
 	return moduleDepNames
 }
 
-func getImportsForModule(moduleName string, forceRegen bool) set.Set {
+func getImportsForModule(moduleName string, forceRegen bool, includeTests bool) set.Set {
 	var moduleNames set.Set
 	if !forceRegen {
 		importsMapMutex.RLock()
@@ -104,7 +126,7 @@ func getImportsForModule(moduleName string, forceRegen bool) set.Set {
 		importsMapMutex.RUnlock()
 	}
 	if moduleNames == nil {
-		moduleNames = parseModuleImports(moduleName)
+		moduleNames = parseModuleImports(moduleName, includeTests)
 		if moduleNames == nil {
 			return nil
 		}
@@ -115,9 +137,9 @@ func getImportsForModule(moduleName string, forceRegen bool) set.Set {
 	return moduleNames
 }
 
-func listMissingDependencies(moduleName string) []string {
+func listMissingDependencies(moduleName string, includeTests bool) []string {
 	allDepNames := set.NewSet()
-	moduleDepNames := getImportsForModule(moduleName, true)
+	moduleDepNames := getImportsForModule(moduleName, true, includeTests)
 	if moduleDepNames == nil {
 		return nil
 	}
@@ -129,7 +151,7 @@ func listMissingDependencies(moduleName string) []string {
 		curr := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		if allDepNames.Add(curr) {
-			nexts := getImportsForModule(moduleName, false)
+			nexts := getImportsForModule(moduleName, false, false)
 			if nexts != nil {
 				for next := range nexts.Iter() {
 					stack = append(stack, next.(string))
@@ -142,14 +164,14 @@ func listMissingDependencies(moduleName string) []string {
 	defer moduleStateMutex.RUnlock()
 	for moduleDepName := range allDepNames.Iter() {
 		moduleDepNameStr := moduleDepName.(string)
-		// log.Printf("module %s depends on %s\n", moduleName, moduleNames.ToSlice())
-		isReady := moduleState[moduleDepNameStr] == moduleReady
+		// alog.Printf("module %s depends on %s\n", moduleName, moduleNames.ToSlice())
+		isReady := moduleState[moduleDepNameStr] == ModuleReady
 		if !isReady {
 			// Check to see if this dependency even exists
 			if beVerbose() {
 				stat, err := os.Stat(filepath.Join(srcRoot, moduleDepNameStr))
 				if err != nil || !stat.IsDir() {
-					log.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
+					alog.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
 				}
 			}
 			notReady = append(notReady, moduleDepNameStr)
@@ -162,26 +184,26 @@ func triggerDependenciesOfModule(moduleName string) {
 	triggers := []string{}
 	importsMapMutex.RLock()
 	for otherModuleName, moduleDepNames := range importsMap {
-		// log.Println(moduleName, moduleDepNames)
+		// alog.Println(moduleName, moduleDepNames)
 		if moduleDepNames.Contains(moduleName) {
 			triggers = append(triggers, otherModuleName)
 		}
 	}
 	importsMapMutex.RUnlock()
 	for _, trigger := range triggers {
-		// log.Println("trigger", trigger)
+		// alog.Println("trigger", trigger)
 		moduleTriggerChan <- trigger
 	}
 }
 
-func getStateSummary() map[int]int {
+func getStateSummary() map[ModuleState]int {
 	moduleStateMutex.RLock()
-	counts := make(map[int]int)
+	counts := make(map[ModuleState]int)
 	for name, state := range moduleState {
 		counts[state] = counts[state] + 1
 		_ = name
-		// if state == moduleDirtyIdle {
-		// 	log.Printf("@(dim:  idle:) %s\n", name)
+		// if state == ModuleDirtyIdle {
+		// 	alog.Printf("@(dim:  idle:) %s\n", name)
 		// }
 	}
 	moduleStateMutex.RUnlock()
@@ -190,11 +212,16 @@ func getStateSummary() map[int]int {
 
 func printStateSummary() {
 	counts := getStateSummary()
-	log.Printf("@(dim:idle:) %d@(dim:, queued:) %d@(dim:, building:) %d@(dim:, building+dirty:) %d@(dim:, ready:) %d\n", counts[0], counts[1], counts[2], counts[3], counts[4])
+	alog.Printf("@(dim:idle:) %d@(dim:, queued:) %d@(dim:, building:) %d@(dim:, building+dirty:) %d@(dim:, ready:) %d\n",
+		counts[ModuleDirtyIdle], counts[ModuleDirtyQueued], counts[ModuleBuilding], counts[ModuleBuildingButDirty], counts[ModuleReady])
 }
 
 func beVerbose() bool {
 	return finishedInitialPass || Opts.Verbose
+}
+
+func runTests() bool {
+	return !Opts.DisableTests && finishedInitialPass
 }
 
 func processBuildQueue() {
@@ -210,10 +237,10 @@ func processBuildQueue() {
 			go b.buildModule(moduleName)
 		case <-timeoutChan:
 			counts := getStateSummary()
-			if counts[moduleDirtyQueued] == 0 && counts[moduleBuilding] == 0 && counts[moduleBuildingButDirty] == 0 && (counts[moduleReady] > 0 || counts[moduleDirtyIdle] > 0) {
+			if counts[ModuleDirtyQueued] == 0 && counts[ModuleBuilding] == 0 && counts[ModuleBuildingButDirty] == 0 && (counts[ModuleReady] > 0 || counts[ModuleDirtyIdle] > 0) {
 				finishedInitialPass = true
-				log.Printf("@(dim:Finished initial pass of all packages.)\n")
-				log.Printf("@(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", counts[moduleReady], counts[moduleDirtyIdle])
+				alog.Printf("@(dim:Finished initial pass of all packages.)\n")
+				alog.Printf("@(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", counts[ModuleReady], counts[ModuleDirtyIdle])
 			}
 		}
 	}
@@ -245,15 +272,15 @@ func processModuleTriggers() {
 			// }
 			moduleStateMutex.Lock()
 			currState := moduleState[moduleName]
-			if currState == moduleBuilding {
+			if currState == ModuleBuilding {
 				if beVerbose() {
-					log.Printf("@(dim:Marking in-progress build of) %s @(dim:dirty.)\n", moduleName)
+					alog.Printf("@(dim:Marking in-progress build of) %s @(dim:dirty.)\n", moduleName)
 				}
-				moduleState[moduleName] = moduleBuildingButDirty
+				moduleState[moduleName] = ModuleBuildingButDirty
 				moduleStateMutex.Unlock()
-			} else if currState == moduleDirtyIdle || currState == moduleReady {
-				// log.Printf("@(dim:Queueing build of) %s\n", moduleName)
-				moduleState[moduleName] = moduleDirtyQueued
+			} else if currState == ModuleDirtyIdle || currState == ModuleReady {
+				// alog.Printf("@(dim:Queueing build of) %s\n", moduleName)
+				moduleState[moduleName] = ModuleDirtyQueued
 				moduleStateMutex.Unlock()
 				dirtyModuleQueue <- moduleName
 			} else {
@@ -270,7 +297,7 @@ func processPathTriggers() {
 		var moduleName string
 		select {
 		case err := <-watcher.Errors:
-			log.Printf("Watcher error: %s\n", err)
+			alog.Printf("Watcher error: %s\n", err)
 			continue
 		case ev := <-watcher.Events:
 			path = ev.Name
@@ -278,16 +305,16 @@ func processPathTriggers() {
 			var err error
 			moduleName, err = filepath.Rel(srcRoot, filepath.Dir(path))
 			if err != nil {
-				log.Bail(err)
+				alog.Bail(err)
 			}
 			if ev.Op&fsnotify.Create != 0 {
 				stat, err := os.Stat(path)
 				if err == nil && stat.IsDir() {
 					relPath, err := filepath.Rel(srcRoot, path)
 					if err != nil {
-						log.Printf("@(error:Error resolving relative path from %s to %s: %s)\n", srcRoot, path, err)
+						alog.Printf("@(error:Error resolving relative path from %s to %s: %s)\n", srcRoot, path, err)
 					} else {
-						log.Printf("@(dim:Watching new directory) %s\n", relPath)
+						alog.Printf("@(dim:Watching new directory) %s\n", relPath)
 						go watchRecursive(relPath)
 					}
 				}
@@ -296,10 +323,10 @@ func processPathTriggers() {
 			// verb = "discovery of"
 			moduleName = filepath.Dir(path)
 		}
-		if !rebuildExts.Contains(filepath.Ext(path)) || strings.HasSuffix(path, "_test.go") {
+		if !rebuildExts.Contains(filepath.Ext(path)) {
 			continue
 		}
-		// log.Printf("@(dim:Triggering module) %s @(dim:due to %s) %s\n", moduleName, verb, path)
+		// alog.Printf("@(dim:Triggering module) %s @(dim:due to %s) %s\n", moduleName, verb, path)
 		moduleTriggerChan <- moduleName
 	}
 }
@@ -312,15 +339,18 @@ func watchRecursive(relPath string) {
 	}
 	stat, err := os.Stat(absPath)
 	if err != nil {
-		log.Printf("Error calling stat on %s: %s\n", absPath, err)
+		alog.Printf("Error calling stat on %s: %s\n", absPath, err)
 		return
 	}
 	if stat.IsDir() {
-		// log.Printf("WATCH %s\n", relPath)
-		watcher.Add(absPath)
+		// alog.Printf("WATCH %s\n", relPath)
+		err := watcher.Add(absPath)
+		if err != nil {
+			alog.Printf("Error watching directory %s: %v\n", absPath, err)
+		}
 		entries, err := ioutil.ReadDir(absPath)
 		if err != nil {
-			log.Printf("Error reading directory %s: %s\n", absPath, err)
+			alog.Printf("Error reading directory %s: %s\n", absPath, err)
 			return
 		}
 		for _, entry := range entries {
@@ -342,28 +372,36 @@ func main() {
 		if ok && err2.Type == flags.ErrHelp {
 			return
 		}
-		log.Printf("Error parsing command-line options: %s\n", err)
+		alog.Printf("Error parsing command-line options: %s\n", err)
 		return
 	}
 	if goPath == "" {
-		log.Printf("GOPATH is not set in the environment. Please set GOPATH first, then retry.\n")
-		log.Printf("For help setting GOPATH, see https://golang.org/doc/code.html\n")
+		alog.Printf("GOPATH is not set in the environment. Please set GOPATH first, then retry.\n")
+		alog.Printf("For help setting GOPATH, see https://golang.org/doc/code.html\n")
 		return
 	}
 	if Opts.NoColor {
-		log.DisableColor()
+		alog.DisableColor()
 	}
 	if Opts.AutoRestart {
 		autorestart.CleanUpChildZombiesQuietly()
 	}
 	watcher, err = fsnotify.NewWatcher()
 	if err != nil {
-		log.Printf("@(error:Error initializing fsnotify Watcher: %s)\n", err)
+		alog.Printf("@(error:Error initializing fsnotify Watcher: %s)\n", err)
 		return
 	}
-	log.Printf("@(dim:autoinstall started; beginning first pass of all packages...)\n")
+	if Opts.MaxWorkers == 0 {
+		Opts.MaxWorkers = runtime.NumCPU()
+	}
+	alog.Printf("@(dim:autoinstall started.)\n")
+	pluralProcess := ""
+	if Opts.MaxWorkers != 1 {
+		pluralProcess = "es"
+	}
+	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)@(dim: using up to )@(dim,cyan:%d)@(dim: process%s.)\n", goPath, Opts.MaxWorkers, pluralProcess)
 	if !Opts.Verbose {
-		log.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
+		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
 	goStdLibPackages = set.NewThreadUnsafeSet()
 	for _, s := range goStdLibPackagesSlice {
@@ -376,9 +414,8 @@ func main() {
 	if Opts.AutoRestart {
 		go autorestart.RestartOnChange()
 	}
-	numBuilders := runtime.NumCPU()
-	builders = make(chan *builder, numBuilders)
-	for i := 0; i < numBuilders; i++ {
+	builders = make(chan *builder, Opts.MaxWorkers)
+	for i := 0; i < Opts.MaxWorkers; i++ {
 		builders <- newBuilder()
 	}
 	processBuildQueue()
