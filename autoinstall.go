@@ -337,7 +337,7 @@ func watchRecursive(relPath string) {
 	if pathSkipSet.Contains(base) {
 		return
 	}
-	stat, err := os.Stat(absPath)
+	stat, err := os.Lstat(absPath)
 	if err != nil {
 		alog.Printf("Error calling stat on %s: %s\n", absPath, err)
 		return
