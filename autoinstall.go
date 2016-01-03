@@ -315,7 +315,7 @@ func processPathTriggers() {
 						alog.Printf("@(error:Error resolving relative path from %s to %s: %s)\n", srcRoot, path, err)
 					} else {
 						alog.Printf("@(dim:Watching new directory) %s\n", relPath)
-						go watchRecursive(relPath)
+						go watchRecursive(relPath, true)
 					}
 				}
 			}
@@ -331,18 +331,30 @@ func processPathTriggers() {
 	}
 }
 
-func watchRecursive(relPath string) {
+func watchRecursive(relPath string, followLinks bool) {
 	absPath := filepath.Join(srcRoot, relPath)
 	base := filepath.Base(absPath)
 	if pathSkipSet.Contains(base) {
 		return
 	}
-	stat, err := os.Lstat(absPath)
+	lstat, err := os.Lstat(absPath)
 	if err != nil {
-		alog.Printf("Error calling stat on %s: %s\n", absPath, err)
+		alog.Printf("Error calling lstat on %s: %s\n", absPath, err)
 		return
 	}
-	if stat.IsDir() {
+	isSymlink := lstat.Mode()&os.ModeSymlink != 0
+	var isDir bool
+	if isSymlink {
+		stat, err := os.Stat(absPath)
+		if err != nil {
+			alog.Printf("Error calling stat on %s: %s\n", absPath, err)
+			return
+		}
+		isDir = stat.IsDir()
+	} else {
+		isDir = lstat.IsDir()
+	}
+	if isDir && (followLinks || !isSymlink) {
 		// alog.Printf("WATCH %s\n", relPath)
 		err := watcher.Add(absPath)
 		if err != nil {
@@ -358,7 +370,7 @@ func watchRecursive(relPath string) {
 			if name == "_workspace" {
 				continue // kludge to avoid recursing into Godeps workspaces
 			}
-			watchRecursive(filepath.Join(relPath, name))
+			watchRecursive(filepath.Join(relPath, name), followLinks && !isSymlink)
 		}
 	} else {
 		pathDiscoveryChan <- relPath
@@ -409,7 +421,7 @@ func main() {
 	}
 	go processPathTriggers()
 	go processModuleTriggers()
-	watchRecursive("")
+	watchRecursive("", true)
 	time.Sleep(200 * time.Millisecond)
 	if Opts.AutoRestart {
 		go autorestart.RestartOnChange()
