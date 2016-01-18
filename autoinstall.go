@@ -15,12 +15,12 @@ import (
 	"github.com/jessevdk/go-flags"
 	"github.com/tillberg/ansi-log"
 	"github.com/tillberg/autorestart"
-	"gopkg.in/fsnotify.v1"
+	"github.com/tillberg/stringset"
+	"github.com/tillberg/watcher"
 )
 
 var Opts struct {
 	Verbose      bool `short:"v" long:"verbose" description:"Show verbose debug information"`
-	AutoRestart  bool `long:"auto-restart" description:"Restart self when updated (for dev use)"`
 	NoColor      bool `long:"no-color" description:"Disable ANSI colors"`
 	MaxWorkers   int  `long:"max-workers" description:"Max number of build workers"`
 	DisableTests bool `long:"disable-tests" description:"Don't try to run 'go test' after rebuilding packages"`
@@ -43,11 +43,9 @@ var moduleState = make(map[string]ModuleState)
 var moduleStateMutex sync.RWMutex
 var pathDiscoveryChan = make(chan string)
 var moduleTriggerChan = make(chan string)
-var pathSkipSet = set.NewSetFromSlice([]interface{}{".git", ".hg", "node_modules", "data"})
 var rebuildExts = set.NewSetFromSlice([]interface{}{".go"})
 var importsMap = make(map[string]set.Set)
 var importsMapMutex sync.RWMutex
-var watcher *fsnotify.Watcher
 var builders chan *builder
 var goStdLibPackages set.Set
 var finishedInitialPass = false
@@ -290,78 +288,17 @@ func processModuleTriggers() {
 	}
 }
 
-func processPathTriggers() {
-	for {
-		// var verb string
-		var path string
-		var moduleName string
-		select {
-		case err := <-watcher.Errors:
-			alog.Printf("Watcher error: %s\n", err)
-			continue
-		case ev := <-watcher.Events:
-			path = ev.Name
-			// verb = "change in"
-			var err error
-			moduleName, err = filepath.Rel(srcRoot, filepath.Dir(path))
-			if err != nil {
-				alog.Bail(err)
-			}
-			if ev.Op&fsnotify.Create != 0 {
-				stat, err := os.Stat(path)
-				if err == nil && stat.IsDir() {
-					relPath, err := filepath.Rel(srcRoot, path)
-					if err != nil {
-						alog.Printf("@(error:Error resolving relative path from %s to %s: %s)\n", srcRoot, path, err)
-					} else {
-						alog.Printf("@(dim:Watching new directory) %s\n", relPath)
-						go watchRecursive(relPath)
-					}
-				}
-			}
-		case path = <-pathDiscoveryChan:
-			// verb = "discovery of"
-			moduleName = filepath.Dir(path)
+func processPathTriggers(notifyChan chan string) {
+	for path := range notifyChan {
+		moduleName, err := filepath.Rel(srcRoot, filepath.Dir(path))
+		if err != nil {
+			alog.Bail(err)
 		}
 		if !rebuildExts.Contains(filepath.Ext(path)) {
 			continue
 		}
-		// alog.Printf("@(dim:Triggering module) %s @(dim:due to %s) %s\n", moduleName, verb, path)
+		// alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", moduleName, path)
 		moduleTriggerChan <- moduleName
-	}
-}
-
-func watchRecursive(relPath string) {
-	absPath := filepath.Join(srcRoot, relPath)
-	base := filepath.Base(absPath)
-	if pathSkipSet.Contains(base) {
-		return
-	}
-	stat, err := os.Lstat(absPath)
-	if err != nil {
-		alog.Printf("Error calling stat on %s: %s\n", absPath, err)
-		return
-	}
-	if stat.IsDir() {
-		// alog.Printf("WATCH %s\n", relPath)
-		err := watcher.Add(absPath)
-		if err != nil {
-			alog.Printf("Error watching directory %s: %v\n", absPath, err)
-		}
-		entries, err := ioutil.ReadDir(absPath)
-		if err != nil {
-			alog.Printf("Error reading directory %s: %s\n", absPath, err)
-			return
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if name == "_workspace" {
-				continue // kludge to avoid recursing into Godeps workspaces
-			}
-			watchRecursive(filepath.Join(relPath, name))
-		}
-	} else {
-		pathDiscoveryChan <- relPath
 	}
 }
 
@@ -383,18 +320,11 @@ func main() {
 	if Opts.NoColor {
 		alog.DisableColor()
 	}
-	if Opts.AutoRestart {
-		autorestart.CleanUpChildZombiesQuietly()
-	}
-	watcher, err = fsnotify.NewWatcher()
-	if err != nil {
-		alog.Printf("@(error:Error initializing fsnotify Watcher: %s)\n", err)
-		return
-	}
 	if Opts.MaxWorkers == 0 {
 		Opts.MaxWorkers = runtime.NumCPU()
 	}
 	alog.Printf("@(dim:autoinstall started.)\n")
+	sighup := autorestart.NotifyOnSighup()
 	pluralProcess := ""
 	if Opts.MaxWorkers != 1 {
 		pluralProcess = "es"
@@ -407,16 +337,22 @@ func main() {
 	for _, s := range goStdLibPackagesSlice {
 		goStdLibPackages.Add(s)
 	}
-	go processPathTriggers()
+
+	listener := watcher.NewListener()
+	listener.Path = srcRoot
+	// "_workspace" is a kludge to avoid recursing into Godeps workspaces
+	listener.Ignored = stringset.New(".git", ".hg", "node_modules", "data", "_workspace")
+	listener.NotifyOnStartup = true
+	listener.Start()
+
+	go processPathTriggers(listener.NotifyChan)
 	go processModuleTriggers()
-	watchRecursive("")
+
 	time.Sleep(200 * time.Millisecond)
-	if Opts.AutoRestart {
-		go autorestart.RestartOnChange()
-	}
 	builders = make(chan *builder, Opts.MaxWorkers)
 	for i := 0; i < Opts.MaxWorkers; i++ {
 		builders <- newBuilder()
 	}
-	processBuildQueue()
+	go processBuildQueue()
+	<-sighup
 }
