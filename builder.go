@@ -2,9 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"runtime"
+	"time"
 
 	"github.com/tillberg/ansi-log"
 	"github.com/tillberg/bismuth"
@@ -54,10 +53,6 @@ func (b *builder) buildModule(moduleName string) {
 				}
 				alog.Printf("@(dim:Not %s) %s@(dim:;) %s @(dim:not ready)%s@(dim:.)\n", verb, moduleName, missingDeps[0], etAlStr)
 			}
-			// go func() {
-			//  time.Sleep(1000 * time.Millisecond)
-			//  dirtyModuleQueue <- moduleName
-			// }()
 			return false
 		}
 		return true
@@ -75,22 +70,9 @@ func (b *builder) buildModule(moduleName string) {
 		alog.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
 	}
 	absPath := filepath.Join(srcRoot, moduleName)
-	packageName := parsePackageName(moduleName)
-	var destPath string
-	if packageName == "main" {
-		exeName := filepath.Base(filepath.Dir(moduleName))
-		destPath = filepath.Join("bin", exeName)
-	} else {
-		destPath = filepath.Join("pkg", fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH), moduleName) + ".a"
-	}
-	absDestPath := filepath.Join(goPath, destPath)
-	var destExistedBefore bool
-	if !beVerbose() {
-		statBefore, _ := os.Stat(absDestPath)
-		destExistedBefore = statBefore != nil
-	}
 	var err error
 	var retCode int
+	start := time.Now()
 	if beVerbose() {
 		retCode, err = ctx.QuoteCwd("go-install", absPath, "go", "install")
 	} else {
@@ -108,14 +90,7 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
-	var forceBuildMessageDisplay bool
-	if !beVerbose() && !destExistedBefore {
-		statAfter, _ := os.Stat(absDestPath)
-		forceBuildMessageDisplay = statAfter != nil
-	}
-	if beVerbose() || forceBuildMessageDisplay {
-		alog.Printf("@(green:Successfully built) %s\n", moduleName)
-	}
+	alog.Printf("@(green:Successfully built) %s @(green:in) %.0f ms\n", moduleName, time.Since(start).Seconds()*1000.0)
 
 	moduleStateMutex.Lock()
 	currState := moduleState[moduleName]
@@ -128,7 +103,6 @@ func (b *builder) buildModule(moduleName string) {
 		moduleStateMutex.Unlock()
 	}
 
-	// printStateSummary()
 	go triggerDependenciesOfModule(moduleName)
 
 	if runTests() && packageHasTests(moduleName) && depsAreReady(true) {
