@@ -1,13 +1,10 @@
 package main
 
 import (
-	"go/parser"
-	"go/token"
-	"io/ioutil"
+	"go/build"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -51,40 +48,29 @@ var goStdLibPackages set.Set
 var finishedInitialPass = false
 var alwaysBeVerbose bool
 
-func parsePackageName(moduleName string) string {
-	fileSet := token.NewFileSet()
-	absPath := filepath.Join(srcRoot, moduleName)
-	pkgMap, err := parser.ParseDir(fileSet, absPath, nil, parser.PackageClauseOnly)
-	if err != nil {
-		alog.Printf("@(error:Error parsing package name of module) %s@(error::) %s\n", moduleName, err)
-		return ""
-	}
-	for pkgName := range pkgMap {
-		return pkgName
-	}
-	return ""
-}
+// func isPackageCommand(moduleName string) bool {
+// 	absPath := filepath.Join(srcRoot, moduleName)
+// 	pkg, err := build.ImportDir(absPath, build.ImportComment)
+// 	if err != nil {
+// 		alog.Printf("@(error:Error parsing package name of module) %s@(error::) %s\n", moduleName, err)
+// 		return false
+// 	}
+// 	return pkg.IsCommand()
+// }
 
 func packageHasTests(moduleName string) bool {
 	absPath := filepath.Join(srcRoot, moduleName)
-	entries, err := ioutil.ReadDir(absPath)
+	pkg, err := build.ImportDir(absPath, build.ImportComment)
 	if err != nil {
 		alog.Printf("Error reading directory %s: %s\n", absPath, err)
 		return false
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasSuffix(name, "_test.go") {
-			return true
-		}
-	}
-	return false
+	return len(pkg.TestGoFiles) > 0
 }
 
 func parseModuleImports(moduleName string, includeTests bool) set.Set {
-	fileSet := token.NewFileSet()
 	absPath := filepath.Join(srcRoot, moduleName)
-	pkgMap, err := parser.ParseDir(fileSet, absPath, nil, parser.ImportsOnly)
+	pkg, err := build.ImportDir(absPath, build.ImportComment)
 	if err != nil {
 		if beVerbose() {
 			alog.Printf("@(error:Error parsing import of module) %s@(error::) %s\n", moduleName, err)
@@ -92,25 +78,9 @@ func parseModuleImports(moduleName string, includeTests bool) set.Set {
 		return nil
 	}
 	moduleDepNames := set.NewSet()
-	for _, pkg := range pkgMap {
-		for filename, file := range pkg.Files {
-			if !includeTests && strings.HasSuffix(filename, "_test.go") {
-				continue
-			}
-			if strings.HasSuffix(filename, "_cgo.go") {
-				continue
-			}
-			for _, importObj := range file.Imports {
-				moduleDepName := importObj.Path.Value
-				// importObj.Path.Value is the parsed literal, including quote marks. Let's kludgily
-				// remove the quotes:
-				if len(moduleDepName) > 2 {
-					moduleDepName = moduleDepName[1 : len(moduleDepName)-1]
-					if moduleDepName != moduleName && !goStdLibPackages.Contains(moduleDepName) {
-						moduleDepNames.Add(moduleDepName)
-					}
-				}
-			}
+	for _, imp := range pkg.Imports {
+		if !goStdLibPackages.Contains(imp) {
+			moduleDepNames.Add(imp)
 		}
 	}
 	return moduleDepNames
@@ -255,7 +225,7 @@ func processModuleTriggers() {
 				moduleNames.Add(moduleName)
 				// Debounce additional triggers for this module. This is particularly
 				// important for filesystem events, as they often come in pairs.
-				timeoutChan = time.After(10 * time.Millisecond)
+				timeoutChan = time.After(100 * time.Millisecond)
 				continue
 			case <-timeoutChan:
 				goto breakFor
@@ -303,6 +273,7 @@ func processPathTriggers(notifyChan chan string) {
 }
 
 func main() {
+	sighup := autorestart.NotifyOnSighup()
 	_, err := flags.ParseArgs(&Opts, os.Args)
 	if err != nil {
 		err2, ok := err.(*flags.Error)
@@ -324,7 +295,6 @@ func main() {
 		Opts.MaxWorkers = runtime.NumCPU()
 	}
 	alog.Printf("@(dim:autoinstall started.)\n")
-	sighup := autorestart.NotifyOnSighup()
 	pluralProcess := ""
 	if Opts.MaxWorkers != 1 {
 		pluralProcess = "es"
@@ -341,8 +311,9 @@ func main() {
 	listener := watcher.NewListener()
 	listener.Path = srcRoot
 	// "_workspace" is a kludge to avoid recursing into Godeps workspaces
-	listener.Ignored = stringset.New(".git", ".hg", "node_modules", "data", "_workspace")
+	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "data", "_workspace")
 	listener.NotifyOnStartup = true
+	listener.DebounceDuration = 200 * time.Millisecond
 	listener.Start()
 
 	go processPathTriggers(listener.NotifyChan)

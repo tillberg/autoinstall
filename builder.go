@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -66,6 +67,11 @@ func (b *builder) buildModule(moduleName string) {
 		return
 	}
 	ctx := b.ctx
+	// Just in case it gets deleted for some reason:
+	tmpdir := os.Getenv("TMPDIR")
+	if tmpdir != "" {
+		os.MkdirAll(tmpdir, 0700)
+	}
 	if beVerbose() {
 		alog.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
 	}
