@@ -1,14 +1,15 @@
 package main
 
 import (
+	"errors"
 	"go/build"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
-	set "github.com/deckarep/golang-set"
 	"github.com/jessevdk/go-flags"
 	"github.com/tillberg/ansi-log"
 	"github.com/tillberg/autorestart"
@@ -17,10 +18,18 @@ import (
 )
 
 var Opts struct {
-	Verbose      bool `short:"v" long:"verbose" description:"Show verbose debug information"`
-	NoColor      bool `long:"no-color" description:"Disable ANSI colors"`
-	MaxWorkers   int  `long:"max-workers" description:"Max number of build workers"`
-	DisableTests bool `long:"disable-tests" description:"Don't try to run 'go test' after rebuilding packages"`
+	Verbose    bool `short:"v" long:"verbose" description:"Show verbose debug information"`
+	NoColor    bool `long:"no-color" description:"Disable ANSI colors"`
+	MaxWorkers int  `long:"max-workers" description:"Max number of build workers"`
+	RunTests   bool `long:"run-tests" description:"Run 'go test' after successfully rebuilding packages"`
+}
+
+type moduleImports struct {
+	// List of dependencies that must be ready in order to build this module.
+	resolvedDependencies *stringset.StringSet
+
+	// List of possible (vendored) dependencies to watch for in the future.
+	extraDepListens *stringset.StringSet
 }
 
 type ModuleState int
@@ -40,11 +49,11 @@ var moduleState = make(map[string]ModuleState)
 var moduleStateMutex sync.RWMutex
 var pathDiscoveryChan = make(chan string)
 var moduleTriggerChan = make(chan string)
-var rebuildExts = set.NewSetFromSlice([]interface{}{".go"})
-var importsMap = make(map[string]set.Set)
+var rebuildExts = stringset.New(".go")
+var importsMap = map[string]*moduleImports{}
 var importsMapMutex sync.RWMutex
 var builders chan *builder
-var goStdLibPackages set.Set
+var goStdLibPackages *stringset.StringSet
 var finishedInitialPass = false
 var alwaysBeVerbose bool
 
@@ -68,61 +77,123 @@ func packageHasTests(moduleName string) bool {
 	return len(pkg.TestGoFiles) > 0
 }
 
-func parseModuleImports(moduleName string, includeTests bool) set.Set {
+const fieldSeparator = '\x00'
+
+var moduleImportsParseError = errors.New("Error parsing module imports")
+
+func parseModuleImports(moduleName string, includeTests bool) ([]string, error) {
 	absPath := filepath.Join(srcRoot, moduleName)
 	pkg, err := build.ImportDir(absPath, build.ImportComment)
 	if err != nil {
 		if beVerbose() {
 			alog.Printf("@(error:Error parsing import of module) %s@(error::) %s\n", moduleName, err)
 		}
-		return nil
+		return nil, moduleImportsParseError
 	}
-	moduleDepNames := set.NewSet()
+	moduleDepNames := []string{}
 	for _, imp := range pkg.Imports {
-		if !goStdLibPackages.Contains(imp) {
-			moduleDepNames.Add(imp)
+		if !goStdLibPackages.Has(imp) {
+			moduleDepNames = append(moduleDepNames, imp)
 		}
 	}
-	return moduleDepNames
+	return moduleDepNames, nil
 }
 
-func getImportsForModule(moduleName string, forceRegen bool, includeTests bool) set.Set {
-	var moduleNames set.Set
+func getImportsForModule(moduleName string, forceRegen bool, includeTests bool) *moduleImports {
+	var imports *moduleImports
 	if !forceRegen {
 		importsMapMutex.RLock()
-		moduleNames = importsMap[moduleName]
+		imports = importsMap[moduleName]
 		importsMapMutex.RUnlock()
 	}
-	if moduleNames == nil {
-		moduleNames = parseModuleImports(moduleName, includeTests)
-		if moduleNames == nil {
+	if imports == nil {
+		rawModuleNames, err := parseModuleImports(moduleName, includeTests)
+		if err != nil {
+			importsMapMutex.Lock()
+			delete(importsMap, moduleName)
+			importsMapMutex.Unlock()
 			return nil
 		}
+		imports = &moduleImports{
+			resolvedDependencies: stringset.New(),
+			extraDepListens:      stringset.New(),
+		}
+		for _, depName := range rawModuleNames {
+			dep := dependency{
+				moduleName: moduleName,
+				depName:    depName,
+			}
+			resolvedDepName, extraDepListens := dep.resolve()
+			imports.resolvedDependencies.Add(resolvedDepName)
+			for _, extraDepListen := range extraDepListens {
+				imports.extraDepListens.Add(extraDepListen)
+			}
+		}
+
 		importsMapMutex.Lock()
-		importsMap[moduleName] = moduleNames
+		importsMap[moduleName] = imports
 		importsMapMutex.Unlock()
 	}
-	return moduleNames
+	return imports
+}
+
+type dependency struct {
+	moduleName string
+	depName    string
+}
+
+func (dep dependency) allVendorOptions() []string {
+	all := []string{}
+	rootPath := dep.moduleName
+	for {
+		vendorOption := rootPath + "/vendor/" + dep.depName
+		all = append(all, vendorOption)
+		lastIndex := strings.LastIndex(rootPath, "/")
+		if lastIndex == -1 {
+			break
+		}
+		rootPath = rootPath[:lastIndex]
+	}
+	return all
+}
+
+// Resolve this dependency, looking for any possible vendored providers.
+func (dep dependency) resolve() (string, []string) {
+	allVendorOptions := dep.allVendorOptions()
+	importsMapMutex.Lock()
+	defer importsMapMutex.Unlock()
+	for i, vendorOption := range allVendorOptions {
+		// alog.Printf("@(dim:Trying %s)\n", vendorOption)
+		if _, exists := importsMap[vendorOption]; exists {
+			// alog.Printf("Found @(cyan:%s)\n", vendorOption)
+			return vendorOption, allVendorOptions[:i]
+		}
+	}
+	return dep.depName, allVendorOptions
 }
 
 func listMissingDependencies(moduleName string, includeTests bool) []string {
-	allDepNames := set.NewSet()
-	moduleDepNames := getImportsForModule(moduleName, true, includeTests)
-	if moduleDepNames == nil {
+	allDepNames := stringset.New()
+	imports := getImportsForModule(moduleName, true, includeTests)
+	// alog.Printf("module %s depends on %s\n", moduleName, imports)
+	if imports == nil {
+		// In the event that this module was deleted, we should fire off a rebuild of anything that depends on this module:
+		go triggerDependenciesOfModule(moduleName)
 		return nil
 	}
+	var currDep string
 	stack := []string{}
-	for moduleDepName := range moduleDepNames.Iter() {
-		stack = append(stack, moduleDepName.(string))
+	for moduleDepName := range imports.resolvedDependencies.Raw() {
+		stack = append(stack, moduleDepName)
 	}
 	for len(stack) > 0 {
-		curr := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if allDepNames.Add(curr) {
-			nexts := getImportsForModule(moduleName, false, false)
-			if nexts != nil {
-				for next := range nexts.Iter() {
-					stack = append(stack, next.(string))
+		currDep, stack = stack[len(stack)-1], stack[:len(stack)-1]
+		if allDepNames.Add(currDep) {
+			depImports := getImportsForModule(currDep, false, false)
+			if depImports != nil {
+				// XXX should we abort if depImports == nil?
+				for next := range depImports.resolvedDependencies.Raw() {
+					stack = append(stack, next)
 				}
 			}
 		}
@@ -130,19 +201,17 @@ func listMissingDependencies(moduleName string, includeTests bool) []string {
 	notReady := []string{}
 	moduleStateMutex.RLock()
 	defer moduleStateMutex.RUnlock()
-	for moduleDepName := range allDepNames.Iter() {
-		moduleDepNameStr := moduleDepName.(string)
-		// alog.Printf("module %s depends on %s\n", moduleName, moduleNames.ToSlice())
-		isReady := moduleState[moduleDepNameStr] == ModuleReady
+	for moduleDepName := range allDepNames.Raw() {
+		isReady := moduleState[moduleDepName] == ModuleReady
 		if !isReady {
 			// Check to see if this dependency even exists
 			if beVerbose() {
-				stat, err := os.Stat(filepath.Join(srcRoot, moduleDepNameStr))
+				stat, err := os.Stat(filepath.Join(srcRoot, moduleDepName))
 				if err != nil || !stat.IsDir() {
-					alog.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepNameStr, moduleName)
+					alog.Printf("@(warn:Dependency missing:) %s@(dim:, needed by) %s\n", moduleDepName, moduleName)
 				}
 			}
-			notReady = append(notReady, moduleDepNameStr)
+			notReady = append(notReady, moduleDepName)
 		}
 	}
 	return notReady
@@ -151,9 +220,9 @@ func listMissingDependencies(moduleName string, includeTests bool) []string {
 func triggerDependenciesOfModule(moduleName string) {
 	triggers := []string{}
 	importsMapMutex.RLock()
-	for otherModuleName, moduleDepNames := range importsMap {
+	for otherModuleName, imports := range importsMap {
 		// alog.Println(moduleName, moduleDepNames)
-		if moduleDepNames.Contains(moduleName) {
+		if imports.resolvedDependencies.Has(moduleName) || imports.extraDepListens.Has(moduleName) {
 			triggers = append(triggers, otherModuleName)
 		}
 	}
@@ -189,7 +258,7 @@ func beVerbose() bool {
 }
 
 func runTests() bool {
-	return !Opts.DisableTests && finishedInitialPass
+	return Opts.RunTests && finishedInitialPass
 }
 
 func processBuildQueue() {
@@ -218,7 +287,7 @@ func processModuleTriggers() {
 	neverChan := make(<-chan time.Time)
 	for {
 		timeoutChan := neverChan
-		moduleNames := set.NewSet()
+		moduleNames := stringset.New()
 		for {
 			select {
 			case moduleName := <-moduleTriggerChan:
@@ -232,8 +301,7 @@ func processModuleTriggers() {
 			}
 		}
 	breakFor:
-		for ifaceModuleName := range moduleNames.Iter() {
-			moduleName := ifaceModuleName.(string)
+		for moduleName := range moduleNames.Raw() {
 			// if strings.Contains(moduleName, "/test") {
 			// 	// Skip modules that look like test data
 			// 	continue
@@ -264,7 +332,7 @@ func processPathTriggers(notifyChan chan string) {
 		if err != nil {
 			alog.Bail(err)
 		}
-		if !rebuildExts.Contains(filepath.Ext(path)) {
+		if !rebuildExts.Has(filepath.Ext(path)) {
 			continue
 		}
 		// alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", moduleName, path)
@@ -303,7 +371,7 @@ func main() {
 	if !Opts.Verbose {
 		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
-	goStdLibPackages = set.NewThreadUnsafeSet()
+	goStdLibPackages = stringset.New()
 	for _, s := range goStdLibPackagesSlice {
 		goStdLibPackages.Add(s)
 	}
@@ -311,6 +379,7 @@ func main() {
 	listener := watcher.NewListener()
 	listener.Path = srcRoot
 	// "_workspace" is a kludge to avoid recursing into Godeps workspaces
+	// "node_modules" is a kludge to avoid walking into typically-huge node_modules trees
 	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "data", "_workspace")
 	listener.NotifyOnStartup = true
 	listener.DebounceDuration = 200 * time.Millisecond
