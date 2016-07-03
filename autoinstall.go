@@ -326,8 +326,9 @@ func processModuleTriggers() {
 	}
 }
 
-func processPathTriggers(notifyChan chan string) {
-	for path := range notifyChan {
+func processPathTriggers(notifyChan chan watcher.PathEvent) {
+	for pathEvent := range notifyChan {
+		path := pathEvent.Path
 		moduleName, err := filepath.Rel(srcRoot, filepath.Dir(path))
 		if err != nil {
 			alog.Bail(err)

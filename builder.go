@@ -78,7 +78,7 @@ func (b *builder) buildModule(moduleName string) {
 	absPath := filepath.Join(srcRoot, moduleName)
 	var err error
 	var retCode int
-	start := time.Now()
+	timer := alog.NewTimer()
 	if beVerbose() {
 		retCode, err = ctx.QuoteCwd("go-install", absPath, "go", "install")
 	} else {
@@ -96,7 +96,8 @@ func (b *builder) buildModule(moduleName string) {
 		abort()
 		return
 	}
-	alog.Printf("@(green:Successfully built) %s @(green:in) %.0f ms\n", moduleName, time.Since(start).Seconds()*1000.0)
+	durationStr := timer.FormatElapsedColor(2*time.Second, 10*time.Second)
+	alog.Printf("@(dim:[)%s@(dim:]) @(green:Successfully built) %s\n", durationStr, moduleName)
 
 	moduleStateMutex.Lock()
 	currState := moduleState[moduleName]
