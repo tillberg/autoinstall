@@ -302,10 +302,6 @@ func processModuleTriggers() {
 		}
 	breakFor:
 		for moduleName := range moduleNames.Raw() {
-			// if strings.Contains(moduleName, "/test") {
-			// 	// Skip modules that look like test data
-			// 	continue
-			// }
 			moduleStateMutex.Lock()
 			currState := moduleState[moduleName]
 			if currState == ModuleBuilding {
