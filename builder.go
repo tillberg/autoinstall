@@ -5,23 +5,26 @@ import (
 	"go/build"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tillberg/ansi-log"
-	"github.com/tillberg/bismuth"
+	"github.com/tillberg/bismuth2"
 )
 
 type builder struct {
-	ctx *bismuth.ExecContext
+	ctx *bismuth2.ExecContext
 }
 
 func newBuilder() *builder {
-	me := &builder{}
-	me.ctx = bismuth.NewExecContext()
-	me.ctx.Connect()
-	return me
+	b := &builder{
+		ctx: bismuth2.New(),
+	}
+	b.ctx.Verbose = Opts.Verbose
+	return b
 }
 
 func (b *builder) buildModule(moduleName string) {
@@ -37,8 +40,8 @@ func (b *builder) buildModule(moduleName string) {
 			moduleTriggerChan <- moduleName
 		}
 	}
-	depsAreReady := func(includeTests bool) bool {
-		missingDeps := listMissingDependencies(moduleName, includeTests)
+	parseDeps := func(includeTests bool) (isReady bool, latestUpdate time.Time) {
+		missingDeps, latestUpdate := parseDependencies(moduleName, includeTests)
 		if missingDeps == nil || len(missingDeps) > 0 {
 			// If this module is missing any up-to-date dependecies, send
 			// it to the end of the queue after a brief pause
@@ -57,9 +60,9 @@ func (b *builder) buildModule(moduleName string) {
 				}
 				alog.Printf("@(dim:Not %s) %s@(dim:;) %s @(dim:not ready)%s@(dim:.)\n", verb, moduleName, missingDeps[0], etAlStr)
 			}
-			return false
+			return false, latestUpdate
 		}
-		return true
+		return true, latestUpdate
 	}
 
 	moduleStateMutex.Lock()
@@ -68,7 +71,8 @@ func (b *builder) buildModule(moduleName string) {
 	buildStartTime := time.Now()
 	timer := alog.NewTimer()
 	// Check that all of this module's dependencies are built. If not, abort this build and send it to the back of the queue.
-	if !depsAreReady(false) {
+	ready, latestDepModTime := parseDeps(false)
+	if !ready {
 		abort()
 		return
 	}
@@ -93,8 +97,7 @@ func (b *builder) buildModule(moduleName string) {
 		// https://github.com/golang/go/blob/003a68bc7fcb917b5a4d92a5c2244bb1adf8f690/src/cmd/go/pkg.go#L693-L715
 		buildTargetPath = filepath.Join(pkg.BinDir, filepath.Base(moduleName))
 	} else {
-		pkgArch := fmt.Sprintf("%s_%s", build.Default.GOOS, build.Default.GOARCH)
-		buildTargetPath = filepath.Join(pkg.PkgRoot, pkgArch, moduleName+".a")
+		buildTargetPath = getPackageBinaryPath(moduleName)
 	}
 	// alog.Printf("Package target: %q\n", buildTargetPath)
 
@@ -114,15 +117,14 @@ func (b *builder) buildModule(moduleName string) {
 			abort()
 			return
 		}
-		var newestGoSrc time.Time
 		for _, file := range files {
 			if filepath.Ext(file.Name()) == ".go" && !strings.HasSuffix(file.Name(), "_test.go") {
-				if file.ModTime().After(newestGoSrc) {
-					newestGoSrc = file.ModTime()
+				if file.ModTime().After(latestDepModTime) {
+					latestDepModTime = file.ModTime()
 				}
 			}
 		}
-		// alog.Printf("mod time of %s: %s\n", moduleName, newestGoSrc)
+		// alog.Printf("mod time of %s: %s\n", moduleName, latestDepModTime)
 		buildTargetModTime, err := getBuildTargetModTime()
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -131,7 +133,7 @@ func (b *builder) buildModule(moduleName string) {
 				return
 			}
 		} else {
-			if buildTargetModTime.After(newestGoSrc) {
+			if buildTargetModTime.After(latestDepModTime) {
 				// alog.Printf("@(dim:Skipping build for) %s@(dim:. No recent changes.)\n", moduleName)
 				skipBuild = true
 			}
@@ -143,20 +145,21 @@ func (b *builder) buildModule(moduleName string) {
 			alog.Printf("@(dim:Building) %s@(dim:...)\n", moduleName)
 		}
 		var err error
-		var retCode int
 		if beVerbose() {
-			retCode, err = ctx.QuoteCwd("go-install", absPath, "go", "install")
+			err = ctx.QuoteCwd("go-install", absPath, "go", "install")
 		} else {
-			_, _, retCode, err = ctx.RunCwd(absPath, "go", "install")
-		}
-		if retCode != 0 {
-			if beVerbose() {
-				alog.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, retCode)
-			}
-			abort()
-			return
+			_, _, err = ctx.RunCwd(absPath, "go", "install")
 		}
 		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				if waitStatus, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+					if beVerbose() {
+						alog.Printf("@(error:Failed to build) %s @(dim)(status=%d)@(r)\n", moduleName, waitStatus.ExitStatus())
+					}
+					abort()
+					return
+				}
+			}
 			alog.Printf("@(error:Failed to install) %s@(error:: %s)\n", moduleName, err)
 			abort()
 			return
@@ -185,9 +188,10 @@ func (b *builder) buildModule(moduleName string) {
 
 	go triggerDependenciesOfModule(moduleName)
 
-	if runTests() && packageHasTests(moduleName) && depsAreReady(true) {
+	ready, _ = parseDeps(true)
+	if runTests() && packageHasTests(moduleName) && ready {
 		alog.Printf("@(dim:Testing) %s@(dim:...)\n", moduleName)
-		if _, err := ctx.QuoteCwd("test-"+moduleName, absPath, "go", "test"); err != nil {
+		if err := ctx.QuoteCwd("test-"+moduleName, absPath, "go", "test"); err != nil {
 			alog.Printf("@(error:Failed to run tests for) %s@(error:: %s)\n", moduleName, err)
 			abort()
 			return

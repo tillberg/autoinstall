@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"go/build"
 	"os"
 	"path/filepath"
@@ -172,14 +173,19 @@ func (dep dependency) resolve() (string, []string) {
 	return dep.depName, allVendorOptions
 }
 
-func listMissingDependencies(moduleName string, includeTests bool) []string {
+func getPackageBinaryPath(moduleName string) string {
+	pkgArch := fmt.Sprintf("%s_%s", build.Default.GOOS, build.Default.GOARCH)
+	return filepath.Join(goPath, "pkg", pkgArch, moduleName+".a")
+}
+
+func parseDependencies(moduleName string, includeTests bool) (missing []string, latestUpdate time.Time) {
 	allDepNames := stringset.New()
 	imports := getImportsForModule(moduleName, true, includeTests)
 	// alog.Printf("module %s depends on %s\n", moduleName, imports)
 	if imports == nil {
 		// In the event that this module was deleted, we should fire off a rebuild of anything that depends on this module:
 		go triggerDependenciesOfModule(moduleName)
-		return nil
+		return nil, latestUpdate
 	}
 	var currDep string
 	stack := []string{}
@@ -212,9 +218,18 @@ func listMissingDependencies(moduleName string, includeTests bool) []string {
 				}
 			}
 			notReady = append(notReady, moduleDepName)
+		} else {
+			pkgPath := getPackageBinaryPath(moduleDepName)
+			stat, err := os.Stat(pkgPath)
+			if err != nil {
+				alog.Printf("@(error:Module %s was supposed to be ready, but its .a file was not found.)\n", moduleDepName)
+				notReady = append(notReady, moduleDepName)
+			} else if stat.ModTime().After(latestUpdate) {
+				latestUpdate = stat.ModTime()
+			}
 		}
 	}
-	return notReady
+	return notReady, latestUpdate
 }
 
 func triggerDependenciesOfModule(moduleName string) {
@@ -356,10 +371,10 @@ func main() {
 	if Opts.NoColor {
 		alog.DisableColor()
 	}
-	if Opts.MaxWorkers == 0 {
-		Opts.MaxWorkers = runtime.NumCPU()
-	}
 	alog.Printf("@(dim:autoinstall started.)\n")
+	if Opts.MaxWorkers == 0 {
+		Opts.MaxWorkers = runtime.GOMAXPROCS(0)
+	}
 	pluralProcess := ""
 	if Opts.MaxWorkers != 1 {
 		pluralProcess = "es"
