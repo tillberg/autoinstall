@@ -48,6 +48,11 @@ func (p *Package) isVendored() bool {
 	return p.Name != p.ImportName
 }
 
+// We shouldn't build programs inside vendor/ trees
+func (p *Package) shouldBuild() bool {
+	return !p.isVendored() || !p.IsProgram
+}
+
 func (p *Package) getAbsTargetPath() string {
 	if p.IsProgram {
 		// XXX This is too simple, as there is some special casing for go tools at

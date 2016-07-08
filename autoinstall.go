@@ -38,13 +38,16 @@ var moduleUpdateChan = make(chan string)
 var finishedInitialPass = false
 var numWorkersActive = 0
 var numBuilds = 0
-var numUpdates = 0
+var numReady = 0
+var startupLogger *alog.Logger
 
 var dependenciesNotReadyError = errors.New("At least one dependency is not ready")
 
 func dispatcher() {
+	startupLogger = alog.New(os.Stderr, "@(dim:{isodate}) ", 0)
 	neverChan := make(<-chan time.Time)
 	for {
+		startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up-to-date...)", numBuilds, numReady)
 		timeout := neverChan
 		hasQueuedWork := len(updateQueue) > 0 || len(buildQueue) > 0
 		if hasQueuedWork {
@@ -59,7 +62,7 @@ func dispatcher() {
 			numWorkersActive--
 			switch p.State {
 			case PackageBuilding:
-				p.State = PackageReady
+				chState(p, PackageReady)
 				p.BuiltModTime = p.UpdateStartTime
 				triggerDependentPackages(p)
 			case PackageBuildingButDirty:
@@ -71,14 +74,13 @@ func dispatcher() {
 			numWorkersActive--
 			switch p.State {
 			case PackageBuilding:
-				p.State = PackageDirtyIdle
+				chState(p, PackageDirtyIdle)
 			case PackageBuildingButDirty:
 				queueUpdate(p)
 			default:
 				alog.Panicf("buildFailure with state %s", p.State)
 			}
 		case pUpdate := <-updateFinished:
-			numUpdates++
 			numWorkersActive--
 			p := packages[pUpdate.Name]
 			if p == nil {
@@ -91,7 +93,7 @@ func dispatcher() {
 						alog.Printf("@(dim:Removing package %s from index, as it has been removed from the filesystem.)\n", pUpdate.Name)
 						delete(packages, pUpdate.Name)
 					} else {
-						p.State = PackageDirtyIdle
+						chState(p, PackageDirtyIdle)
 					}
 				} else {
 					p.mergeUpdate(pUpdate)
@@ -113,9 +115,9 @@ func dispatcher() {
 			case PackageReady, PackageDirtyIdle:
 				queueUpdate(p)
 			case PackageUpdating:
-				p.State = PackageUpdatingButDirty
+				chState(p, PackageUpdatingButDirty)
 			case PackageBuilding:
-				p.State = PackageBuildingButDirty
+				chState(p, PackageBuildingButDirty)
 			case PackageUpdateQueued, PackageUpdatingButDirty, PackageBuildingButDirty:
 				// Already have an update queued (or will), no need to change
 			case PackageBuildQueued:
@@ -137,7 +139,7 @@ func dispatcher() {
 				if pkg.State != PackageUpdateQueued {
 					alog.Panicf("Package %s was in updateQueue but had state %s", pkg.Name, pkg.State)
 				}
-				pkg.State = PackageUpdating
+				chState(pkg, PackageUpdating)
 				numWorkersActive++
 				go update(pkg.Name)
 			}
@@ -147,30 +149,42 @@ func dispatcher() {
 				if pkg.State != PackageBuildQueued {
 					alog.Panicf("Package %s was in buildQueue but had state %s", pkg.Name, pkg.State)
 				}
-				depsModTime, err := calcDepsModTime(pkg)
-				if pkg.SourceModTime.After(depsModTime) {
-					depsModTime = pkg.SourceModTime
-				}
-				if err == dependenciesNotReadyError {
-					// At least one dependency is not ready
-					pkg.State = PackageDirtyIdle
-				} else if err != nil {
-					alog.Panicf("@(error:Encountered unexpected error received from calcDepsModTime: %v)", err)
-				} else if !pkg.BuiltModTime.IsZero() && (pkg.BuiltModTime.Equal(depsModTime) || pkg.BuiltModTime.After(depsModTime)) {
-					// No need to build, as this package is already up-to-date.
-					if beVerbose() {
-						alog.Printf("@(dim:No need to build) %s@(dim:. Target mod time is) %s@(dim:, source mod time is) %s@(dim:.)\n", pkg.Name, pkg.BuiltModTime, depsModTime)
+				if pkg.shouldBuild() {
+					depsModTime, err := calcDepsModTime(pkg)
+					if pkg.SourceModTime.After(depsModTime) {
+						depsModTime = pkg.SourceModTime
 					}
-					pkg.State = PackageReady
-					triggerDependentPackages(pkg)
-				} else {
-					pkg.State = PackageBuilding
-					numWorkersActive++
-					go pkg.build()
+					if err == dependenciesNotReadyError {
+						// At least one dependency is not ready
+						chState(pkg, PackageDirtyIdle)
+					} else if err != nil {
+						alog.Panicf("@(error:Encountered unexpected error received from calcDepsModTime: %v)", err)
+					} else if !pkg.BuiltModTime.IsZero() && (pkg.BuiltModTime.Equal(depsModTime) || pkg.BuiltModTime.After(depsModTime)) {
+						// No need to build, as this package is already up-to-date.
+						if beVerbose() {
+							alog.Printf("@(dim:No need to build) %s@(dim:. Target mod time is) %s@(dim:, source mod time is) %s@(dim:.)\n", pkg.Name, pkg.BuiltModTime, depsModTime)
+						}
+						chState(pkg, PackageReady)
+						triggerDependentPackages(pkg)
+					} else {
+						chState(pkg, PackageBuilding)
+						numWorkersActive++
+						go pkg.build()
+					}
 				}
 			}
 		}
 	}
+}
+
+func chState(p *Package, state PackageState) {
+	if p.State == PackageReady {
+		numReady--
+	}
+	if state == PackageReady {
+		numReady++
+	}
+	p.State = state
 }
 
 func queueUpdate(p *Package) {
@@ -181,7 +195,7 @@ func queueUpdate(p *Package) {
 			}
 		}
 	}
-	p.State = PackageUpdateQueued
+	chState(p, PackageUpdateQueued)
 	updateQueue = append(updateQueue, p)
 }
 
@@ -193,7 +207,7 @@ func queueBuild(p *Package) {
 			}
 		}
 	}
-	p.State = PackageBuildQueued
+	chState(p, PackageBuildQueued)
 	buildQueue = append(buildQueue, p)
 }
 
@@ -213,11 +227,12 @@ func unqueueBuild(p *Package) {
 	if !found {
 		alog.Panicf("Package %s was in state PackageBuildQueued but could not be found in buildQueue.", p.Name)
 	}
-	p.State = PackageDirtyIdle
+	chState(p, PackageDirtyIdle)
 }
 
 func triggerDependentPackages(p *Package) {
-	// Note: This is currently over-cautious, matching even packages that currently import a different, vendored version of this package
+	// Note: This is currently over-cautious, matching even packages that currently import a different, vendored/unvendored version of this package
+	// alog.Printf("@(dim:Triggering check of packages that import %s)\n", p.ImportName)
 	for _, pkg := range packages {
 		if pkg.Imports != nil && pkg.Imports.Has(p.ImportName) {
 			switch pkg.State {
@@ -230,9 +245,9 @@ func triggerDependentPackages(p *Package) {
 			case PackageUpdateQueued, PackageUpdatingButDirty, PackageBuildingButDirty:
 				// Package is already queued for update (or will be), so no need for change
 			case PackageUpdating:
-				pkg.State = PackageUpdatingButDirty
+				chState(pkg, PackageUpdatingButDirty)
 			case PackageBuilding:
-				pkg.State = PackageBuildingButDirty
+				chState(pkg, PackageBuildingButDirty)
 			case PackageBuildQueued:
 				// Package already queued for build, so no need to change
 			default:
@@ -286,8 +301,8 @@ func printStartupSummary() {
 		}
 	}
 	alog.Printf("@(dim:Finished initial pass of all packages.)\n")
-	alog.Printf("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", numBuilds, numReady, numUnready)
-	alog.Println(numUpdates)
+	startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", numBuilds, numReady, numUnready)
+	startupLogger.Close()
 }
 
 func beVerbose() bool {
