@@ -20,6 +20,7 @@ type Package struct {
 
 	BuiltModTime    time.Time // The time that the most recent build was started; should also be the ModTime on the target file
 	SourceModTime   time.Time // The ModTime of the most recently updated source file in this package
+	RecentSrcName   string    // Name of the most recent source file; its ModTime equals the package's SourceModTime
 	UpdateStartTime time.Time // The time that the current update started
 	UpdateError     error     // Error encountered during update, if any (only set on pUpdate objects)
 	RemovePackage   bool      // Set to true if this package should be removed from the index

@@ -70,7 +70,11 @@ func (p *Package) build() {
 		return
 	}
 	durationStr := timer.FormatElapsedColor(2*time.Second, 10*time.Second)
-	alog.Printf("@(dim:[)%s@(dim:]) @(green:Successfully built) %s\n", durationStr, p.Name)
+	if beVerbose() {
+		alog.Printf("@(dim:[)%s@(dim:]) @(green:Successfully built) %s @(dim:->) @(time:%s)\n", durationStr, p.Name, p.UpdateStartTime.Format(DATE_FORMAT))
+	} else {
+		alog.Printf("@(dim:[)%s@(dim:]) @(green:Successfully built) %s\n", durationStr, p.Name)
+	}
 
 	buildSuccess <- p
 }

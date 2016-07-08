@@ -48,6 +48,7 @@ func update(pkgName string) {
 			}
 			if fileinfo.ModTime().After(pUpdate.SourceModTime) {
 				pUpdate.SourceModTime = fileinfo.ModTime()
+				pUpdate.RecentSrcName = fileinfo.Name()
 			}
 		}
 	}
@@ -79,6 +80,7 @@ func (p *Package) mergeUpdate(pUpdate *Package) {
 	p.Imports = pUpdate.Imports
 	p.BuiltModTime = pUpdate.BuiltModTime
 	p.SourceModTime = pUpdate.SourceModTime
+	p.RecentSrcName = pUpdate.RecentSrcName
 	p.UpdateStartTime = pUpdate.UpdateStartTime
 	p.IsProgram = pUpdate.IsProgram
 	p.WasUpdated = true

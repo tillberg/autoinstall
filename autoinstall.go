@@ -16,7 +16,8 @@ import (
 	"github.com/tillberg/watcher"
 )
 
-const enableSanityChecks = true
+const enableSanityChecks = false
+const DATE_FORMAT = "2006-01-02T15:04:05"
 
 var Opts struct {
 	Verbose    bool `short:"v" long:"verbose" description:"Show verbose debug information"`
@@ -26,7 +27,7 @@ var Opts struct {
 
 var goPath = os.Getenv("GOPATH")
 var srcRoot = filepath.Join(goPath, "src")
-var tmpdir = filepath.Join(goPath, "autoinstall-tmp")
+var tmpdir = filepath.Join(goPath, ".autoinstall-tmp")
 
 var packages = map[string]*Package{}
 var updateQueue = []*Package{}
@@ -47,7 +48,7 @@ func dispatcher() {
 	startupLogger = alog.New(os.Stderr, "@(dim:{isodate}) ", 0)
 	neverChan := make(<-chan time.Time)
 	for {
-		startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up-to-date...)", numBuilds, numReady)
+		startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up to date...)", numBuilds, numReady)
 		timeout := neverChan
 		hasQueuedWork := len(updateQueue) > 0 || len(buildQueue) > 0
 		if hasQueuedWork {
@@ -150,26 +151,49 @@ func dispatcher() {
 					alog.Panicf("Package %s was in buildQueue but had state %s", pkg.Name, pkg.State)
 				}
 				if pkg.shouldBuild() {
-					depsModTime, err := calcDepsModTime(pkg)
-					if pkg.SourceModTime.After(depsModTime) {
-						depsModTime = pkg.SourceModTime
-					}
+					recentDep, err := getMostRecentDep(pkg)
 					if err == dependenciesNotReadyError {
 						// At least one dependency is not ready
 						chState(pkg, PackageDirtyIdle)
 					} else if err != nil {
 						alog.Panicf("@(error:Encountered unexpected error received from calcDepsModTime: %v)", err)
-					} else if !pkg.BuiltModTime.IsZero() && (pkg.BuiltModTime.Equal(depsModTime) || pkg.BuiltModTime.After(depsModTime)) {
-						// No need to build, as this package is already up-to-date.
-						if beVerbose() {
-							alog.Printf("@(dim:No need to build) %s@(dim:. Target mod time is) %s@(dim:, source mod time is) %s@(dim:.)\n", pkg.Name, pkg.BuiltModTime, depsModTime)
-						}
-						chState(pkg, PackageReady)
-						triggerDependentPackages(pkg)
 					} else {
-						chState(pkg, PackageBuilding)
-						numWorkersActive++
-						go pkg.build()
+						var inputsModTime time.Time
+						if recentDep != nil {
+							inputsModTime = recentDep.BuiltModTime
+						}
+						if pkg.SourceModTime.After(inputsModTime) {
+							inputsModTime = pkg.SourceModTime
+						}
+						printTimes := func() {
+							alog.Printf("    @(dim:Target ModTime) @(time:%s)\n", pkg.BuiltModTime.Format(DATE_FORMAT))
+							if recentDep != nil {
+								alog.Printf("    @(dim:  deps ModTime) @(time:%s) %s\n", recentDep.BuiltModTime.Format(DATE_FORMAT), recentDep.Name)
+							} else {
+								alog.Printf("    @(dim:  deps ModTime) n/a @(dim:no dependencies)\n")
+							}
+							alog.Printf("    @(dim:   src ModTime) @(time:%s) %s\n", pkg.SourceModTime.Format(DATE_FORMAT), pkg.RecentSrcName)
+						}
+						if !pkg.UpdateStartTime.After(inputsModTime) {
+							// This package last updated after some of its inputs. Send it back to update again.
+							queueUpdate(pkg)
+						} else if !pkg.BuiltModTime.IsZero() && !inputsModTime.After(pkg.BuiltModTime) {
+							// No need to build, as this package is already up to date.
+							if beVerbose() {
+								alog.Printf("@(dim:No need to build) %s\n", pkg.Name, pkg.BuiltModTime, inputsModTime)
+								printTimes()
+							}
+							chState(pkg, PackageReady)
+							triggerDependentPackages(pkg)
+						} else {
+							if beVerbose() && !pkg.BuiltModTime.IsZero() {
+								alog.Printf("@(dim:Building) %s@(dim::)\n", pkg.Name)
+								printTimes()
+							}
+							chState(pkg, PackageBuilding)
+							numWorkersActive++
+							go pkg.build()
+						}
 					}
 				}
 			}
@@ -257,18 +281,18 @@ func triggerDependentPackages(p *Package) {
 	}
 }
 
-func calcDepsModTime(p *Package) (time.Time, error) {
-	var depsModTime time.Time
+func getMostRecentDep(p *Package) (*Package, error) {
+	var recentDep *Package
 	for importName, _ := range p.Imports.Raw() {
 		depPackage := resolveImport(p, importName)
 		if depPackage == nil || depPackage.State != PackageReady {
-			return time.Time{}, dependenciesNotReadyError
+			return nil, dependenciesNotReadyError
 		}
-		if depPackage.BuiltModTime.After(depsModTime) {
-			depsModTime = depPackage.BuiltModTime
+		if recentDep == nil || depPackage.BuiltModTime.After(recentDep.BuiltModTime) {
+			recentDep = depPackage
 		}
 	}
-	return depsModTime, nil
+	return recentDep, nil
 }
 
 // Resolve this dependency, looking for any possible vendored providers.
@@ -301,7 +325,7 @@ func printStartupSummary() {
 		}
 	}
 	alog.Printf("@(dim:Finished initial pass of all packages.)\n")
-	startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up-to-date;) @(warn:%d) @(dim:packages could not be built.)\n", numBuilds, numReady, numUnready)
+	startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up to date;) @(warn:%d) @(dim:packages could not be built.)\n", numBuilds, numReady, numUnready)
 	startupLogger.Close()
 }
 
@@ -345,6 +369,8 @@ func main() {
 	}
 	if Opts.NoColor {
 		alog.DisableColor()
+	} else {
+		alog.AddAnsiColorCode("time", alog.ColorBlue)
 	}
 	alog.Printf("@(dim:autoinstall started.)\n")
 	if Opts.MaxWorkers == 0 {
@@ -391,4 +417,5 @@ func main() {
 	go dispatcher()
 
 	<-sighup
+	startupLogger.Close()
 }
