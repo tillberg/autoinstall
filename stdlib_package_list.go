@@ -1,5 +1,7 @@
 package main
 
+import "github.com/tillberg/stringset"
+
 var goStdLibPackagesSlice = []string{
 	"C",
 	"expvar",
@@ -383,3 +385,5 @@ var goStdLibPackagesSlice = []string{
 	"os/user",
 	"os/signal",
 }
+
+var goStdLibPackages = stringset.New(goStdLibPackagesSlice...)

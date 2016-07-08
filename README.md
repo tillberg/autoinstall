@@ -12,7 +12,7 @@ Quick Start
 You must already have Go installed and have GOPATH set in your environment. Then just run:
 
 ```sh
-$ go get github.com/tillberg/autoinstall
+$ go get -u github.com/tillberg/autoinstall
 $ $GOPATH/bin/autoinstall
 ```
 
@@ -23,11 +23,9 @@ Use `--help` to see additional options.
 #### Known issues
 
 - `autoinstall` expects to find a single package per directory.
-- My [github.com/tillberg/watcher](watcher) utility handles
-  folder creation and deletion all right, but it doesn't currently handle deleting and
-  re-creating a directory (with the same name as before) correctly.
-
-This are both definitely fixable, and
+- My [github.com/tillberg/watcher](watcher) utility handles folder creation and deletion all
+  right, but it doesn't currently always handle deleting and re-creating a directory (with
+  the same name as before) correctly.
 
 #### Automatically restart daemons
 
