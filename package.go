@@ -25,6 +25,9 @@ type Package struct {
 	UpdateError     error     // Error encountered during update, if any (only set on pUpdate objects)
 	RemovePackage   bool      // Set to true if this package should be removed from the index
 	WasUpdated      bool      // Set to true once this package has been Updated once
+
+	LastBuildInputsModTime time.Time // Safety valve to prevent repeated build attempts without real updates to its inputs
+
 	// PackageDeps *stringset.StringSet // Actual Packages resolved in most recent build attempt
 }
 

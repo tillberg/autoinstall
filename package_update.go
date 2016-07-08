@@ -20,14 +20,13 @@ func update(pkgName string) {
 	absPkgPath := filepath.Join(srcRoot, pkgName)
 	pkg, err := build.ImportDir(absPkgPath, build.ImportComment)
 	if err != nil {
-		if beVerbose() {
-			alog.Printf("@(error:Error parsing import of module %s: %s)\n", pkgName, err)
-		}
 		pUpdate.UpdateError = err
 		// If the directory no longer exists, then tell the dispatcher to remove this package from the index
-		_, err := os.Stat(absPkgPath)
-		if err != nil && os.IsNotExist(err) {
+		_, statErr := os.Stat(absPkgPath)
+		if statErr != nil && os.IsNotExist(statErr) {
 			pUpdate.RemovePackage = true
+		} else if beVerbose() {
+			alog.Printf("@(warn:Error parsing import of module %s: %s)\n", pkgName, err)
 		}
 		return
 	}

@@ -31,7 +31,7 @@ func (p *Package) build() {
 	args := []string{"go", "build", "-o", tmpTargetPath}
 	var err error
 	if beVerbose() {
-		err = ctx.QuoteCwd("go-build", absPath, args...)
+		err = ctx.QuoteCwd("go-build:"+p.Name, absPath, args...)
 	} else {
 		_, _, err = ctx.RunCwd(absPath, args...)
 	}
@@ -70,7 +70,7 @@ func (p *Package) build() {
 		return
 	}
 	durationStr := timer.FormatElapsedColor(2*time.Second, 10*time.Second)
-	if beVerbose() {
+	if Opts.Verbose {
 		alog.Printf("@(dim:[)%s@(dim:]) @(green:Successfully built) %s @(dim:->) @(time:%s)\n", durationStr, p.Name, p.UpdateStartTime.Format(DATE_FORMAT))
 	} else {
 		alog.Printf("@(dim:[)%s@(dim:]) @(green:Successfully built) %s\n", durationStr, p.Name)

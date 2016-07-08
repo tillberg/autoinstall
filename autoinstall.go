@@ -37,34 +37,108 @@ var buildFailure = make(chan *Package)
 var updateFinished = make(chan *Package)
 var moduleUpdateChan = make(chan string)
 var finishedInitialPass = false
-var numWorkersActive = 0
-var numBuilds = 0
+var numBuildSucesses = 0
+var numBuildFailures = 0
 var numReady = 0
+var numUnready = 0
+var numBuildsActive = 0
+var numUpdatesActive = 0
 var startupLogger *alog.Logger
+var neverChan = make(<-chan time.Time)
+
+func numWorkersActive() int {
+	return numUpdatesActive + numBuildsActive
+}
 
 var dependenciesNotReadyError = errors.New("At least one dependency is not ready")
+var startupFormatStrBase = alog.Colorify("@(green:%d) @(dim:package%s built,) @(green:%d) @(dim:package%s up to date.)")
+var startupFormatStrChecking = alog.Colorify(" @(dim:Checking) @(green:%d)@(dim:...)")
+var startupFormatStrNotReady = alog.Colorify(" @(warn:%d) @(dim:package%s could not be built.)\n")
+
+func pluralize(num int, s string) string {
+	if num == 1 {
+		return ""
+	}
+	return s
+}
+
+func updateStartupText(final bool) {
+	if !final {
+		format := startupFormatStrBase + startupFormatStrChecking
+		checkingTotal := len(updateQueue) + numUpdatesActive + len(buildQueue) + numBuildsActive
+		startupLogger.Replacef(format, numBuildSucesses, pluralize(numBuildSucesses, "s"), numReady, pluralize(numReady, "s"), checkingTotal)
+	} else {
+		format := startupFormatStrBase + startupFormatStrNotReady
+		startupLogger.Replacef(format, numBuildSucesses, pluralize(numBuildSucesses, "s"), numReady, pluralize(numReady, "s"), numUnready, pluralize(numUnready, "s"))
+		startupLogger.Close()
+	}
+}
+
+type DispatchState int
+
+const (
+	DispatchIdle DispatchState = iota
+	DispatchCanPushWork
+	DispatchWaitingForWork
+	DispatchMaybeFinishedInitialPass
+)
+
+func getDispatchState() DispatchState {
+	if len(updateQueue) > 0 || len(buildQueue) > 0 {
+		if numWorkersActive() < Opts.MaxWorkers {
+			return DispatchCanPushWork
+		}
+	} else if !finishedInitialPass && numWorkersActive() == 0 {
+		return DispatchMaybeFinishedInitialPass
+	}
+	if numWorkersActive() > 0 {
+		return DispatchWaitingForWork
+	}
+	return DispatchIdle
+}
+
+func getTimeout(state DispatchState) <-chan time.Time {
+	switch state {
+	case DispatchIdle:
+		return neverChan
+	case DispatchCanPushWork:
+		// Debounce filesystem events a little (though `watcher` already should be doing that more aggressively).
+		// In particular, this delay ensures that we process all messages waiting in the various queues before
+		// pushing work to workers.
+		return time.After(2 * time.Millisecond)
+	case DispatchWaitingForWork:
+		// Periodically output messages about outstanding builds, both to inform the user about progress on very
+		// slow builds as well as to help debug "stuck" builds.
+		return time.After(30 * time.Second)
+	case DispatchMaybeFinishedInitialPass:
+		// When we can wait a whole second with empty queues and no active work, then we call the initial pass
+		// complete. This is kind of kludgy but is functional; a more "correct" solution would require `watcher`
+		// informing us when *it* had completed a first full walk of the directory tree.
+		return time.After(1 * time.Second)
+	}
+	alog.Panicf("getTimeout received unexpected DispatchState %s", state)
+	return nil
+}
 
 func dispatcher() {
 	startupLogger = alog.New(os.Stderr, "@(dim:{isodate}) ", 0)
-	neverChan := make(<-chan time.Time)
+
 	for {
-		startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up to date...)", numBuilds, numReady)
-		timeout := neverChan
-		hasQueuedWork := len(updateQueue) > 0 || len(buildQueue) > 0
-		if hasQueuedWork {
-			timeout = time.After(10 * time.Millisecond)
-		} else if !finishedInitialPass && numWorkersActive == 0 {
-			timeout = time.After(1 * time.Second)
+		if !finishedInitialPass {
+			updateStartupText(false)
 		}
+		dispatchState := getDispatchState()
+		timeout := getTimeout(dispatchState)
 
 		select {
 		case p := <-buildSuccess:
-			numBuilds++
-			numWorkersActive--
+			numBuildSucesses++
+			numBuildsActive--
 			switch p.State {
 			case PackageBuilding:
 				chState(p, PackageReady)
 				p.BuiltModTime = p.UpdateStartTime
+				p.LastBuildInputsModTime = time.Time{}
 				triggerDependentPackages(p)
 			case PackageBuildingButDirty:
 				queueUpdate(p)
@@ -72,7 +146,8 @@ func dispatcher() {
 				alog.Panicf("buildSuccess with state %s", p.State)
 			}
 		case p := <-buildFailure:
-			numWorkersActive--
+			numBuildFailures++
+			numBuildsActive--
 			switch p.State {
 			case PackageBuilding:
 				chState(p, PackageDirtyIdle)
@@ -82,7 +157,7 @@ func dispatcher() {
 				alog.Panicf("buildFailure with state %s", p.State)
 			}
 		case pUpdate := <-updateFinished:
-			numWorkersActive--
+			numUpdatesActive--
 			p := packages[pUpdate.Name]
 			if p == nil {
 				alog.Panicf("Couldn't find package %s, yet dispatcher received an update for it.", pUpdate.Name)
@@ -111,6 +186,7 @@ func dispatcher() {
 				p = NewPackage(pName)
 				p.init()
 				packages[pName] = p
+				numUnready++
 			}
 			switch p.State {
 			case PackageReady, PackageDirtyIdle:
@@ -129,72 +205,101 @@ func dispatcher() {
 				alog.Panicf("moduleUpdateChan encountered unexpected state %s", p.State)
 			}
 		case <-timeout:
-			if !hasQueuedWork {
+			switch dispatchState {
+			case DispatchMaybeFinishedInitialPass:
 				// We've reached the conclusion of the initial pass
 				finishedInitialPass = true
 				printStartupSummary()
-			}
-			for numWorkersActive < Opts.MaxWorkers && len(updateQueue) > 0 {
-				var pkg *Package
-				pkg, updateQueue = updateQueue[0], updateQueue[1:]
-				if pkg.State != PackageUpdateQueued {
-					alog.Panicf("Package %s was in updateQueue but had state %s", pkg.Name, pkg.State)
-				}
-				chState(pkg, PackageUpdating)
-				numWorkersActive++
-				go update(pkg.Name)
-			}
-			for numWorkersActive < Opts.MaxWorkers && len(buildQueue) > 0 {
-				var pkg *Package
-				pkg, buildQueue = buildQueue[0], buildQueue[1:]
-				if pkg.State != PackageBuildQueued {
-					alog.Panicf("Package %s was in buildQueue but had state %s", pkg.Name, pkg.State)
-				}
-				if pkg.shouldBuild() {
-					recentDep, err := getMostRecentDep(pkg)
-					if err == dependenciesNotReadyError {
-						// At least one dependency is not ready
-						chState(pkg, PackageDirtyIdle)
-					} else if err != nil {
-						alog.Panicf("@(error:Encountered unexpected error received from calcDepsModTime: %v)", err)
-					} else {
-						var inputsModTime time.Time
-						if recentDep != nil {
-							inputsModTime = recentDep.BuiltModTime
-						}
-						if pkg.SourceModTime.After(inputsModTime) {
-							inputsModTime = pkg.SourceModTime
-						}
-						printTimes := func() {
-							alog.Printf("    @(dim:Target ModTime) @(time:%s)\n", pkg.BuiltModTime.Format(DATE_FORMAT))
-							if recentDep != nil {
-								alog.Printf("    @(dim:  deps ModTime) @(time:%s) %s\n", recentDep.BuiltModTime.Format(DATE_FORMAT), recentDep.Name)
-							} else {
-								alog.Printf("    @(dim:  deps ModTime) n/a @(dim:no dependencies)\n")
-							}
-							alog.Printf("    @(dim:   src ModTime) @(time:%s) %s\n", pkg.SourceModTime.Format(DATE_FORMAT), pkg.RecentSrcName)
-						}
-						if !pkg.UpdateStartTime.After(inputsModTime) {
-							// This package last updated after some of its inputs. Send it back to update again.
-							queueUpdate(pkg)
-						} else if !pkg.BuiltModTime.IsZero() && !inputsModTime.After(pkg.BuiltModTime) {
-							// No need to build, as this package is already up to date.
-							if beVerbose() {
-								alog.Printf("@(dim:No need to build) %s\n", pkg.Name, pkg.BuiltModTime, inputsModTime)
-								printTimes()
-							}
-							chState(pkg, PackageReady)
-							triggerDependentPackages(pkg)
-						} else {
-							if beVerbose() && !pkg.BuiltModTime.IsZero() {
-								alog.Printf("@(dim:Building) %s@(dim::)\n", pkg.Name)
-								printTimes()
-							}
-							chState(pkg, PackageBuilding)
-							numWorkersActive++
-							go pkg.build()
-						}
+			case DispatchCanPushWork:
+				pushWork()
+			case DispatchWaitingForWork:
+				for _, p := range packages {
+					switch p.State {
+					case PackageBuilding, PackageBuildingButDirty:
+						alog.Printf("@(dim:Still building %s...)\n", p.Name)
+					case PackageUpdating, PackageUpdatingButDirty:
+						alog.Printf("@(dim:Still checking %s...)\n", p.Name)
 					}
+				}
+			default:
+				alog.Panicf("dispatch hit timeout with unexpected dispatchState %s", dispatchState)
+			}
+		}
+	}
+}
+
+func pushWork() {
+	for numWorkersActive() < Opts.MaxWorkers && len(updateQueue) > 0 {
+		var pkg *Package
+		pkg, updateQueue = updateQueue[0], updateQueue[1:]
+		if pkg.State != PackageUpdateQueued {
+			alog.Panicf("Package %s was in updateQueue but had state %s", pkg.Name, pkg.State)
+		}
+		chState(pkg, PackageUpdating)
+		numUpdatesActive++
+		go update(pkg.Name)
+	}
+	for numWorkersActive() < Opts.MaxWorkers && len(buildQueue) > 0 {
+		var pkg *Package
+		pkg, buildQueue = buildQueue[0], buildQueue[1:]
+		if pkg.State != PackageBuildQueued {
+			alog.Panicf("Package %s was in buildQueue but had state %s", pkg.Name, pkg.State)
+		}
+		if !pkg.shouldBuild() {
+			chState(pkg, PackageDirtyIdle)
+		} else {
+			recentDep, err := getMostRecentDep(pkg)
+			if err == dependenciesNotReadyError {
+				// At least one dependency is not ready
+				chState(pkg, PackageDirtyIdle)
+			} else if err != nil {
+				alog.Panicf("@(error:Encountered unexpected error received from calcDepsModTime: %v)", err)
+			} else {
+				var inputsModTime time.Time
+				if recentDep != nil {
+					inputsModTime = recentDep.BuiltModTime
+				}
+				if pkg.SourceModTime.After(inputsModTime) {
+					inputsModTime = pkg.SourceModTime
+				}
+				printTimes := func() {
+					alog.Printf("    @(dim:Target ModTime) @(time:%s)\n", pkg.BuiltModTime.Format(DATE_FORMAT))
+					if recentDep != nil {
+						alog.Printf("    @(dim:  deps ModTime) @(time:%s) %s\n", recentDep.BuiltModTime.Format(DATE_FORMAT), recentDep.Name)
+					} else {
+						alog.Printf("    @(dim:  deps ModTime) n/a @(dim:no dependencies)\n")
+					}
+					alog.Printf("    @(dim:   src ModTime) @(time:%s) %s\n", pkg.SourceModTime.Format(DATE_FORMAT), pkg.RecentSrcName)
+				}
+				if !pkg.UpdateStartTime.After(inputsModTime) {
+					// This package last updated after some of its inputs. Send it back to update again.
+					queueUpdate(pkg)
+				} else if !pkg.BuiltModTime.IsZero() && !inputsModTime.After(pkg.BuiltModTime) {
+					// No need to build, as this package is already up to date.
+					if Opts.Verbose {
+						alog.Printf("@(dim:No need to build) %s\n", pkg.Name)
+						printTimes()
+					}
+					chState(pkg, PackageReady)
+					triggerDependentPackages(pkg)
+				} else if !inputsModTime.After(pkg.LastBuildInputsModTime) {
+					if Opts.Verbose {
+						// Sometimes, package updates/builds can be unnecessary triggered repeatedly. For example, sometimes builds themselves
+						// can cause files to be touched in depended-upon packages, resulting in a cycle of endless failed builds (successful
+						// builds would not be retried already because we would compare the timestamps and determine that the target was up to
+						// date).
+						alog.Printf("@(dim:Not building) %s@(dim:, as the package and its dependencies have not changed since its last build, which failed.)\n", pkg.Name)
+					}
+					chState(pkg, PackageDirtyIdle)
+				} else {
+					if Opts.Verbose && !pkg.BuiltModTime.IsZero() {
+						alog.Printf("@(dim:Building) %s@(dim::)\n", pkg.Name)
+						printTimes()
+					}
+					chState(pkg, PackageBuilding)
+					numBuildsActive++
+					pkg.LastBuildInputsModTime = inputsModTime
+					go pkg.build()
 				}
 			}
 		}
@@ -207,6 +312,12 @@ func chState(p *Package, state PackageState) {
 	}
 	if state == PackageReady {
 		numReady++
+	}
+	if p.State == PackageDirtyIdle {
+		numUnready--
+	}
+	if state == PackageDirtyIdle {
+		numUnready++
 	}
 	p.State = state
 }
@@ -314,19 +425,8 @@ func resolveImport(p *Package, importName string) *Package {
 }
 
 func printStartupSummary() {
-	numReady := 0
-	numUnready := 0
-	for _, pkg := range packages {
-		switch pkg.State {
-		case PackageReady:
-			numReady++
-		case PackageDirtyIdle:
-			numUnready++
-		}
-	}
 	alog.Printf("@(dim:Finished initial pass of all packages.)\n")
-	startupLogger.Replacef("@(green:%d) @(dim:packages built,) @(green:%d) @(dim:packages up to date;) @(warn:%d) @(dim:packages could not be built.)\n", numBuilds, numReady, numUnready)
-	startupLogger.Close()
+	updateStartupText(true)
 }
 
 func beVerbose() bool {
@@ -343,7 +443,7 @@ func processPathTriggers(notifyChan chan watcher.PathEvent) {
 			alog.Bail(err)
 		}
 		if buildExtensions.Has(filepath.Ext(path)) {
-			if beVerbose() {
+			if Opts.Verbose {
 				alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", moduleName, path)
 			}
 			moduleUpdateChan <- moduleName
