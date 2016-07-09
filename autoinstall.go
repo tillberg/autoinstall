@@ -2,10 +2,13 @@ package main
 
 import (
 	"errors"
+	"go/parser"
+	"go/token"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,7 +142,7 @@ func dispatcher() {
 				chState(p, PackageReady)
 				p.BuiltModTime = p.UpdateStartTime
 				p.LastBuildInputsModTime = time.Time{}
-				triggerDependentPackages(p)
+				triggerDependentPackages(p.ImportName)
 			case PackageBuildingButDirty:
 				queueUpdate(p)
 			default:
@@ -167,7 +170,10 @@ func dispatcher() {
 				if pUpdate.UpdateError != nil {
 					if pUpdate.RemovePackage {
 						alog.Printf("@(dim:Removing package %s from index, as it has been removed from the filesystem.)\n", pUpdate.Name)
-						delete(packages, pUpdate.Name)
+						delete(packages, p.Name)
+						// Trigger updates of any packages that depend on this import name
+						// XXX this should be modified if triggerDependentPackages is made more specific in the future
+						triggerDependentPackages(p.ImportName)
 					} else {
 						chState(p, PackageDirtyIdle)
 					}
@@ -281,7 +287,7 @@ func pushWork() {
 						printTimes()
 					}
 					chState(pkg, PackageReady)
-					triggerDependentPackages(pkg)
+					triggerDependentPackages(pkg.ImportName)
 				} else if !inputsModTime.After(pkg.LastBuildInputsModTime) {
 					if Opts.Verbose {
 						// Sometimes, package updates/builds can be unnecessary triggered repeatedly. For example, sometimes builds themselves
@@ -365,11 +371,11 @@ func unqueueBuild(p *Package) {
 	chState(p, PackageDirtyIdle)
 }
 
-func triggerDependentPackages(p *Package) {
+func triggerDependentPackages(importName string) {
 	// Note: This is currently over-cautious, matching even packages that currently import a different, vendored/unvendored version of this package
 	// alog.Printf("@(dim:Triggering check of packages that import %s)\n", p.ImportName)
 	for _, pkg := range packages {
-		if pkg.Imports != nil && pkg.Imports.Has(p.ImportName) {
+		if pkg.Imports != nil && pkg.Imports.Has(importName) {
 			switch pkg.State {
 			case PackageReady, PackageDirtyIdle:
 				if pkg.WasUpdated {
@@ -392,11 +398,53 @@ func triggerDependentPackages(p *Package) {
 	}
 }
 
+func diagnoseNotReady(p *Package) {
+	switch p.State {
+	case PackageBuilding, PackageBuildingButDirty, PackageUpdating, PackageUpdatingButDirty, PackageUpdateQueued, PackageBuildQueued:
+		// Just wait
+	case PackageDirtyIdle:
+		queueUpdate(p)
+	default:
+		alog.Panicf("diagnoseNotReady encountered unexpected state %s", p.State)
+	}
+}
+
+func diagnoseCircularDependency(p *Package) {
+	importNameQuoted := strconv.Quote(p.ImportName)
+	absPkgPath := filepath.Join(srcRoot, p.Name)
+	files, _ := ioutil.ReadDir(absPkgPath)
+	for _, filename := range files {
+		if filepath.Ext(filename.Name()) != ".go" {
+			continue
+		}
+		path := filepath.Join(absPkgPath, filename.Name())
+		fileSet := token.NewFileSet()
+		ast, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
+		if err != nil {
+			alog.Printf("Error parsing %s: %v\n", path, err)
+		}
+		for _, imp := range ast.Imports {
+			if imp.Path.Value == importNameQuoted {
+				position := fileSet.Position(imp.Pos())
+				alog.Printf("@(error:Circular import found on line %d of %s)\n", position.Line, path)
+			}
+		}
+	}
+}
+
 func getMostRecentDep(p *Package) (*Package, error) {
 	var recentDep *Package
 	for importName, _ := range p.Imports.Raw() {
 		depPackage := resolveImport(p, importName)
 		if depPackage == nil || depPackage.State != PackageReady {
+			if depPackage == p {
+				diagnoseCircularDependency(p)
+			} else if beVerbose() {
+				alog.Printf("@(dim:Can't build) %s @(dim:because) %s @(dim:isn't ready.)\n", p.Name, depPackage.Name)
+				if finishedInitialPass {
+					diagnoseNotReady(depPackage)
+				}
+			}
 			return nil, dependenciesNotReadyError
 		}
 		if recentDep == nil || depPackage.BuiltModTime.After(recentDep.BuiltModTime) {
