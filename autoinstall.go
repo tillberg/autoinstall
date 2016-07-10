@@ -398,11 +398,13 @@ func triggerDependentPackages(importName string) {
 	}
 }
 
-func diagnoseNotReady(p *Package) {
+func diagnoseNotReady(parent *Package, p *Package) {
 	switch p.State {
 	case PackageBuilding, PackageBuildingButDirty, PackageUpdating, PackageUpdatingButDirty, PackageUpdateQueued, PackageBuildQueued:
-		// Just wait
+		// Just wait. Though it may be helpful to inform the user of this?
 	case PackageDirtyIdle:
+		alog.Printf("@(dim:Can't build) %s @(dim:because) %s @(dim:isn't ready.)\n", parent.Name, p.Name)
+		p.LastBuildInputsModTime = time.Time{} // Force a build even if a previous one failed, so that we can get the output again
 		queueUpdate(p)
 	default:
 		alog.Panicf("diagnoseNotReady encountered unexpected state %s", p.State)
@@ -440,9 +442,10 @@ func getMostRecentDep(p *Package) (*Package, error) {
 			if depPackage == p {
 				diagnoseCircularDependency(p)
 			} else if beVerbose() {
-				alog.Printf("@(dim:Can't build) %s @(dim:because) %s @(dim:isn't ready.)\n", p.Name, depPackage.Name)
-				if finishedInitialPass {
-					diagnoseNotReady(depPackage)
+				if depPackage == nil {
+					alog.Printf("%s @(dim:requires) %s@(dim:, which could not be found.)\n", p.Name, importName)
+				} else {
+					diagnoseNotReady(p, depPackage)
 				}
 			}
 			return nil, dependenciesNotReadyError
@@ -537,7 +540,7 @@ func main() {
 	listener.Path = srcRoot
 	// "_workspace" is a kludge to avoid recursing into Godeps workspaces
 	// "node_modules" is a kludge to avoid walking into typically-huge node_modules trees
-	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "data", "_workspace")
+	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "_workspace")
 	listener.NotifyOnStartup = true
 	listener.DebounceDuration = 200 * time.Millisecond
 	listener.Start()
