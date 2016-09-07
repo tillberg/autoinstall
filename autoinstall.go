@@ -540,7 +540,7 @@ func main() {
 	listener.Path = srcRoot
 	// "_workspace" is a kludge to avoid recursing into Godeps workspaces
 	// "node_modules" is a kludge to avoid walking into typically-huge node_modules trees
-	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "_workspace")
+	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "_workspace", "etld")
 	listener.NotifyOnStartup = true
 	listener.DebounceDuration = 200 * time.Millisecond
 	listener.Start()

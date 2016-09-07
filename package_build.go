@@ -9,7 +9,6 @@ import (
 
 	"github.com/tillberg/ansi-log"
 	"github.com/tillberg/bismuth2"
-	"github.com/tillberg/util/randstr"
 )
 
 func (p *Package) build() {
@@ -23,7 +22,7 @@ func (p *Package) build() {
 	if beVerbose() {
 		alog.Printf("@(dim:Building) %s@(dim:...)\n", p.Name)
 	}
-	tmpTargetPath := filepath.Join(tmpdir, randstr.RandStr(20))
+	tmpTargetPath := filepath.Join(tmpdir, RandStr(20))
 	fail := func() {
 		os.Remove(tmpTargetPath)
 		buildFailure <- p
