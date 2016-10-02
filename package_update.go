@@ -45,8 +45,19 @@ func update(pkgName string) {
 				pUpdate.UpdateError = err
 				return
 			}
-			if fileinfo.ModTime().After(pUpdate.SourceModTime) {
-				pUpdate.SourceModTime = fileinfo.ModTime()
+			modTime := fileinfo.ModTime()
+			if modTime.After(pUpdate.UpdateStartTime) {
+				if modTime.After(time.Now()) {
+					alog.Printf("@(warn:File has future modification time: %q mod %s)\n", path, modTime.String())
+					alog.Printf("@(warn:Correct triggering of builds depends on correctly-set system clocks.)\n")
+					// Assume that it was not actually modified in the future, but that the system clock is just wrong
+					// This will allow us to build the package, but we'll keep re-building every time autoinstall
+					// restarts until the system clock gets past the file's time.
+					modTime = pUpdate.UpdateStartTime.Add(-1 * time.Microsecond)
+				}
+			}
+			if modTime.After(pUpdate.SourceModTime) {
+				pUpdate.SourceModTime = modTime
 				pUpdate.RecentSrcName = fileinfo.Name()
 			}
 		}
