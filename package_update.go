@@ -72,7 +72,13 @@ func update(pkgName string) {
 	statFiles(pkg.SwigFiles)
 	statFiles(pkg.SwigCXXFiles)
 	statFiles(pkg.SysoFiles)
+	if shouldRunTests() {
+		statFiles(pkg.TestGoFiles)
+	}
 
+	if len(pkg.TestGoFiles) > 0 {
+		pUpdate.HasTests = true
+	}
 	pUpdate.IsProgram = pkg.Name == "main"
 
 	targetPath := pUpdate.getAbsTargetPath()
@@ -93,5 +99,6 @@ func (p *Package) mergeUpdate(pUpdate *Package) {
 	p.RecentSrcName = pUpdate.RecentSrcName
 	p.UpdateStartTime = pUpdate.UpdateStartTime
 	p.IsProgram = pUpdate.IsProgram
+	p.HasTests = pUpdate.HasTests
 	p.WasUpdated = true
 }

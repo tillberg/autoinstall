@@ -17,6 +17,7 @@ type Package struct {
 
 	Imports   *stringset.StringSet // List of package dependencies as specified in import statements
 	IsProgram bool                 // True if the target is an executable
+	HasTests  bool                 // True if the package has any _test.go files
 
 	BuiltModTime    time.Time // The time that the most recent build was started; should also be the ModTime on the target file
 	SourceModTime   time.Time // The ModTime of the most recently updated source file in this package

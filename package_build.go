@@ -74,6 +74,17 @@ func (p *Package) build() {
 	} else {
 		alog.Printf("@(dim:[)%s@(dim:]) @(green:Successfully built) %s\n", durationStr, p.Name)
 	}
+	if p.HasTests && shouldRunTests() {
+		args := []string{"go", "test"}
+		if Opts.TestArgShort {
+			args = append(args, "-short")
+		}
+		if Opts.TestArgRun != "" {
+			args = append(args, "-run")
+			args = append(args, Opts.TestArgRun)
+		}
+		ctx.QuoteCwd("go-test:"+p.Name, absPath, args...)
+	}
 
 	buildSuccess <- p
 }

@@ -23,9 +23,12 @@ const enableSanityChecks = false
 const DATE_FORMAT = "2006-01-02T15:04:05"
 
 var Opts struct {
-	Verbose    bool `short:"v" long:"verbose" description:"Show verbose debug information"`
-	NoColor    bool `long:"no-color" description:"Disable ANSI colors"`
-	MaxWorkers int  `long:"max-workers" description:"Max number of build workers"`
+	Verbose      bool   `short:"v" long:"verbose" description:"Show verbose debug information"`
+	NoColor      bool   `long:"no-color" description:"Disable ANSI colors"`
+	MaxWorkers   int    `long:"max-workers" description:"Max number of build workers"`
+	RunTests     bool   `long:"run-tests" description:"Run tests after building packages (after initial pass)"`
+	TestArgShort bool   `long:"test-arg-short" description:"Pass the -short flag to go test"`
+	TestArgRun   string `long:"test-arg-run" description:"Pass the -run flag to go test with this value"`
 }
 
 var goPath = os.Getenv("GOPATH")
@@ -482,6 +485,10 @@ func printStartupSummary() {
 
 func beVerbose() bool {
 	return finishedInitialPass || Opts.Verbose
+}
+
+func shouldRunTests() bool {
+	return finishedInitialPass && Opts.RunTests
 }
 
 var buildExtensions = stringset.New(".go", ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
