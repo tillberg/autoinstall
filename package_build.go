@@ -83,7 +83,7 @@ func (p *Package) build() {
 			args = append(args, "-run")
 			args = append(args, Opts.TestArgRun)
 		}
-		ctx.QuoteCwd("go-test:"+p.Name, absPath, args...)
+		go ctx.QuoteCwd("go-test:"+p.Name, absPath, args...)
 	}
 
 	buildSuccess <- p
