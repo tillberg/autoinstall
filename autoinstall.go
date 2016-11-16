@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/jessevdk/go-flags"
-	"github.com/tillberg/ansi-log"
+	"github.com/tillberg/alog"
 	"github.com/tillberg/autorestart"
 	"github.com/tillberg/stringset"
 	"github.com/tillberg/watcher"
@@ -27,6 +27,7 @@ var Opts struct {
 	NoColor      bool   `long:"no-color" description:"Disable ANSI colors"`
 	MaxWorkers   int    `long:"max-workers" description:"Max number of build workers"`
 	RunTests     bool   `long:"run-tests" description:"Run tests after building packages (after initial pass)"`
+	Tags         string `long:"tags" description:"-tags parameter to pass to go-build"`
 	TestArgShort bool   `long:"test-arg-short" description:"Pass the -short flag to go test"`
 	TestArgRun   string `long:"test-arg-run" description:"Pass the -run flag to go test with this value"`
 }

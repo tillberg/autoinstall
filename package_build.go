@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tillberg/ansi-log"
+	"github.com/tillberg/alog"
 	"github.com/tillberg/bismuth2"
 )
 
@@ -28,6 +28,10 @@ func (p *Package) build() {
 		buildFailure <- p
 	}
 	args := []string{"go", "build", "-o", tmpTargetPath}
+	if Opts.Tags != "" {
+		args = append(args, "-tags")
+		args = append(args, Opts.Tags)
+	}
 	var err error
 	if beVerbose() {
 		err = ctx.QuoteCwd("go-build:"+p.Name, absPath, args...)
