@@ -32,9 +32,15 @@ var Opts struct {
 	TestArgRun   string `long:"test-arg-run" description:"Pass the -run flag to go test with this value"`
 }
 
-var goPath = os.Getenv("GOPATH")
+var goPath = (func() string {
+	p := os.Getenv("GOPATH")
+	if p == "" {
+		panic("GOPATH must be set")
+	}
+	return p
+})()
+
 var srcRoot = filepath.Join(goPath, "src")
-var tmpdir = filepath.Join(goPath, ".autoinstall-tmp")
 
 var packages = map[string]*Package{}
 var updateQueue = []*Package{}
@@ -553,28 +559,26 @@ func main() {
 	listener.DebounceDuration = 200 * time.Millisecond
 	listener.Start()
 
-	// Delete any straggler tmp files, carefully
-	files, err := ioutil.ReadDir(tmpdir)
-	if err == nil {
-		for _, file := range files {
-			if filepath.Ext(file.Name()) == ".tmp" {
-				os.Remove(filepath.Join(tmpdir, file.Name()))
-			}
-		}
-	} else if os.IsNotExist(err) {
-		err = os.MkdirAll(tmpdir, 0700)
-		if err != nil {
-			alog.Printf("@(error:Error creating temp directory at %s: %v)\n", tmpdir, err)
-			return
-		}
-	} else {
-		alog.Printf("@(error:Error checking contents of temp directory at %s: %v)\n", tmpdir, err)
-		return
-	}
+	// Delete any straggler .autoinstall-tmp files
+	filepath.Walk(filepath.Join(goPath, "bin"), cleanAutoinstallTmpFiles)
+	filepath.Walk(filepath.Join(goPath, "bin"), cleanAutoinstallTmpFiles)
 
 	go processPathTriggers(listener.NotifyChan)
 	go dispatcher()
 
 	<-sighup
 	startupLogger.Close()
+}
+
+func cleanAutoinstallTmpFiles(path string, info os.FileInfo, err error) error {
+	if err != nil {
+		return nil
+	}
+	if filepath.Base(path) == ".autoinstall-tmp" {
+		err := os.Remove(path)
+		if err != nil {
+			alog.Printf("@(error:Error deleting temp file %s: %v)", path, err)
+		}
+	}
+	return nil
 }

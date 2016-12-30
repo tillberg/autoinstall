@@ -22,7 +22,8 @@ func (p *Package) build() {
 	if beVerbose() {
 		alog.Printf("@(dim:Building) %s@(dim:...)\n", p.Name)
 	}
-	tmpTargetPath := filepath.Join(tmpdir, RandStr(20))
+	targetPath := p.getAbsTargetPath()
+	tmpTargetPath := targetPath + "." + RandStr(10) + ".autoinstall-tmp"
 	fail := func() {
 		os.Remove(tmpTargetPath)
 		buildFailure <- p
@@ -58,7 +59,6 @@ func (p *Package) build() {
 		fail()
 		return
 	}
-	targetPath := p.getAbsTargetPath()
 	targetDir := filepath.Dir(targetPath)
 	err = os.MkdirAll(targetDir, 0750)
 	if err != nil {
