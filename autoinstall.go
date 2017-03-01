@@ -15,6 +15,7 @@ import (
 	"github.com/jessevdk/go-flags"
 	"github.com/tillberg/alog"
 	"github.com/tillberg/autorestart"
+	"github.com/tillberg/bismuth2"
 	"github.com/tillberg/stringset"
 	"github.com/tillberg/watcher"
 )
@@ -549,6 +550,9 @@ func main() {
 	if !Opts.Verbose {
 		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
+
+	ctx := bismuth2.New()
+	ctx.Quote("go-version", "go", "version")
 
 	listener := watcher.NewListener()
 	listener.Path = srcRoot
