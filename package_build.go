@@ -16,9 +16,7 @@ func (p *Package) build() {
 	ctx.Verbose = Opts.Verbose
 
 	timer := alog.NewTimer()
-	// Just in case it gets deleted for some reason:
-	absPath := filepath.Join(srcRoot, p.Name)
-
+	absPath := p.getAbsSrcPath()
 	if beVerbose() {
 		alog.Printf("@(dim:Building) %s@(dim:...)\n", p.Name)
 	}

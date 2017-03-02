@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ var goPath = (func() string {
 	return p
 })()
 
-var srcRoot = filepath.Join(goPath, "src")
+var goPathSrcRoot = filepath.Join(goPath, "src")
 
 var packages = map[string]*Package{}
 var updateQueue = []*Package{}
@@ -59,6 +60,7 @@ var numBuildsActive = 0
 var numUpdatesActive = 0
 var startupLogger *alog.Logger
 var neverChan = make(<-chan time.Time)
+var lastModuleUpdateTime time.Time
 
 func numWorkersActive() int {
 	return numUpdatesActive + numBuildsActive
@@ -92,7 +94,8 @@ type DispatchState int
 
 const (
 	DispatchIdle DispatchState = iota
-	DispatchCanPushWork
+	DispatchCanPushUpdateWork
+	DispatchCanPushAnyWork
 	DispatchWaitingForWork
 	DispatchMaybeFinishedInitialPass
 )
@@ -100,7 +103,11 @@ const (
 func getDispatchState() DispatchState {
 	if len(updateQueue) > 0 || len(buildQueue) > 0 {
 		if numWorkersActive() < Opts.MaxWorkers {
-			return DispatchCanPushWork
+			if time.Since(lastModuleUpdateTime) > 500*time.Millisecond {
+				return DispatchCanPushAnyWork
+			} else {
+				return DispatchCanPushUpdateWork
+			}
 		}
 	} else if !finishedInitialPass && numWorkersActive() == 0 {
 		return DispatchMaybeFinishedInitialPass
@@ -115,11 +122,13 @@ func getTimeout(state DispatchState) <-chan time.Time {
 	switch state {
 	case DispatchIdle:
 		return neverChan
-	case DispatchCanPushWork:
+	case DispatchCanPushUpdateWork:
+		fallthrough
+	case DispatchCanPushAnyWork:
 		// Debounce filesystem events a little (though `watcher` already should be doing that more aggressively).
 		// In particular, this delay ensures that we process all messages waiting in the various queues before
 		// pushing work to workers.
-		return time.After(2 * time.Millisecond)
+		return time.After(1 * time.Millisecond)
 	case DispatchWaitingForWork:
 		// Periodically output messages about outstanding builds, both to inform the user about progress on very
 		// slow builds as well as to help debug "stuck" builds.
@@ -198,6 +207,7 @@ func dispatcher() {
 				alog.Panicf("updateFinished with state %s", p.State)
 			}
 		case pName := <-moduleUpdateChan:
+			lastModuleUpdateTime = time.Now()
 			p := packages[pName]
 			if p == nil {
 				p = NewPackage(pName)
@@ -227,8 +237,11 @@ func dispatcher() {
 				// We've reached the conclusion of the initial pass
 				finishedInitialPass = true
 				printStartupSummary()
-			case DispatchCanPushWork:
-				pushWork()
+			case DispatchCanPushUpdateWork:
+				pushUpdateWork()
+			case DispatchCanPushAnyWork:
+				pushUpdateWork()
+				pushBuildWork()
 			case DispatchWaitingForWork:
 				for _, p := range packages {
 					switch p.State {
@@ -245,7 +258,22 @@ func dispatcher() {
 	}
 }
 
-func pushWork() {
+// var squelchWarningTargetNames = stringset.New("example", "_example", "examples", "_examples", "simple", "_simple", "test", "_test", "testdata", "_testdata", "basic", "hello")
+var knownNameCollisions = stringset.New()
+
+func warnNameCollision(a, b, target string) {
+	// if !beVerbose() && squelchWarningTargetNames.Has(target) {
+	// 	return
+	// }
+	if b < a {
+		a, b = b, a
+	}
+	if finishedInitialPass || knownNameCollisions.Add(a+":"+b) {
+		alog.Printf("@(warn:Program name collsion:) %s @(warn:and) %s @(warn:->) %s\n", a, b, target)
+	}
+}
+
+func pushUpdateWork() {
 	for numWorkersActive() < Opts.MaxWorkers && len(updateQueue) > 0 {
 		var pkg *Package
 		pkg, updateQueue = updateQueue[0], updateQueue[1:]
@@ -256,7 +284,11 @@ func pushWork() {
 		numUpdatesActive++
 		go update(pkg.Name)
 	}
-	for numWorkersActive() < Opts.MaxWorkers && len(buildQueue) > 0 {
+}
+
+func pushBuildWork() {
+workerLoop:
+	for len(updateQueue) == 0 && numUpdatesActive == 0 && numWorkersActive() < Opts.MaxWorkers && len(buildQueue) > 0 {
 		var pkg *Package
 		pkg, buildQueue = buildQueue[0], buildQueue[1:]
 		if pkg.State != PackageBuildQueued {
@@ -264,62 +296,114 @@ func pushWork() {
 		}
 		if !pkg.shouldBuild() {
 			chState(pkg, PackageDirtyIdle)
-		} else {
-			recentDep, err := getMostRecentDep(pkg)
+			continue workerLoop
+		}
+
+		recentDep, err := getMostRecentDep(pkg)
+		if err != nil {
 			if err == dependenciesNotReadyError {
 				// At least one dependency is not ready
 				chState(pkg, PackageDirtyIdle)
-			} else if err != nil {
-				alog.Panicf("@(error:Encountered unexpected error received from calcDepsModTime: %v)", err)
 			} else {
-				var inputsModTime time.Time
-				if recentDep != nil {
-					inputsModTime = recentDep.BuiltModTime
-				}
-				if pkg.SourceModTime.After(inputsModTime) {
-					inputsModTime = pkg.SourceModTime
-				}
-				printTimes := func() {
-					alog.Printf("    @(dim:Target ModTime) @(time:%s)\n", pkg.BuiltModTime.Format(DATE_FORMAT))
-					if recentDep != nil {
-						alog.Printf("    @(dim:  deps ModTime) @(time:%s) %s\n", recentDep.BuiltModTime.Format(DATE_FORMAT), recentDep.Name)
-					} else {
-						alog.Printf("    @(dim:  deps ModTime) n/a @(dim:no dependencies)\n")
+				alog.Panicf("@(error:Encountered unexpected error received from calcDepsModTime: %v)", err)
+			}
+			continue workerLoop
+		}
+
+		deps, err := calculateDeps(pkg)
+		if err != nil {
+			chState(pkg, PackageDirtyIdle)
+			continue workerLoop
+		}
+
+		pkg.computeDesiredBuildID(deps)
+		if pkg.IsProgram && pkg.CurrentBuildID != "" && pkg.CurrentBuildID != pkg.DesiredBuildID {
+			// alog.Printf("@(dim:%s) Build ID Desired %s\n", pkg.Name, pkg.DesiredBuildID)
+			// alog.Printf("@(dim:%s) Build ID Current %s\n", pkg.Name, pkg.CurrentBuildID)
+			targetPath := pkg.getAbsTargetPath()
+			for _, otherPkg := range packages {
+				if pkg != otherPkg && targetPath == otherPkg.getAbsTargetPath() {
+					if otherPkg.DesiredBuildID == "" {
+						deps, err := calculateDeps(otherPkg)
+						if err != nil {
+							chState(pkg, PackageDirtyIdle)
+							continue workerLoop
+						}
+						otherPkg.computeDesiredBuildID(deps)
 					}
-					alog.Printf("    @(dim:   src ModTime) @(time:%s) %s\n", pkg.SourceModTime.Format(DATE_FORMAT), pkg.RecentSrcName)
-				}
-				if !pkg.UpdateStartTime.After(inputsModTime) {
-					// This package last updated after some of its inputs. Send it back to update again.
-					queueUpdate(pkg)
-				} else if !pkg.BuiltModTime.IsZero() && !inputsModTime.After(pkg.BuiltModTime) {
-					// No need to build, as this package is already up to date.
-					if Opts.Verbose {
-						alog.Printf("@(dim:No need to build) %s\n", pkg.Name)
-						printTimes()
+					warnNameCollision(pkg.Name, otherPkg.Name, filepath.Base(targetPath))
+					// alog.Printf("@(dim:%s) Build ID Desired %s\n", otherPkg.Name, otherPkg.DesiredBuildID)
+					// alog.Printf("@(dim:%s) Build ID Current %s\n", otherPkg.Name, otherPkg.CurrentBuildID)
+					if !finishedInitialPass && otherPkg.DesiredBuildID == pkg.CurrentBuildID || otherPkg.CurrentBuildID == pkg.DesiredBuildID {
+						if beVerbose() {
+							alog.Printf("@(warn:Skipping %s because colliding package %s is up to date)\n", pkg.Name, otherPkg.Name)
+						}
+						// don't overwrite colliding programs during the initial pass when it's already up-to-date for one of the variations
+						chState(pkg, PackageDirtyIdle)
+						continue workerLoop
 					}
-					chState(pkg, PackageReady)
-					triggerDependentPackages(pkg.ImportName)
-				} else if !inputsModTime.After(pkg.LastBuildInputsModTime) {
-					if Opts.Verbose {
-						// Sometimes, package updates/builds can be unnecessary triggered repeatedly. For example, sometimes builds themselves
-						// can cause files to be touched in depended-upon packages, resulting in a cycle of endless failed builds (successful
-						// builds would not be retried already because we would compare the timestamps and determine that the target was up to
-						// date).
-						alog.Printf("@(dim:Not building) %s@(dim:, as the package and its dependencies have not changed since its last build, which failed.)\n", pkg.Name)
-					}
-					chState(pkg, PackageDirtyIdle)
-				} else {
-					if Opts.Verbose && !pkg.BuiltModTime.IsZero() {
-						alog.Printf("@(dim:Building) %s@(dim::)\n", pkg.Name)
-						printTimes()
-					}
-					chState(pkg, PackageBuilding)
-					numBuildsActive++
-					pkg.LastBuildInputsModTime = inputsModTime
-					go pkg.build()
 				}
 			}
 		}
+
+		var inputsModTime time.Time
+		if recentDep != nil {
+			inputsModTime = recentDep.BuiltModTime
+		}
+		if pkg.SourceModTime.After(inputsModTime) {
+			inputsModTime = pkg.SourceModTime
+		}
+		printTimes := func() {
+			alog.Printf("    @(dim:Target ModTime) @(time:%s)\n", pkg.BuiltModTime.Format(DATE_FORMAT))
+			if recentDep != nil {
+				alog.Printf("    @(dim:  deps ModTime) @(time:%s) %s\n", recentDep.BuiltModTime.Format(DATE_FORMAT), recentDep.Name)
+			} else {
+				alog.Printf("    @(dim:  deps ModTime) n/a @(dim:no dependencies)\n")
+			}
+			alog.Printf("    @(dim:   src ModTime) @(time:%s) %s\n", pkg.SourceModTime.Format(DATE_FORMAT), pkg.RecentSrcName)
+		}
+
+		if !pkg.UpdateStartTime.After(inputsModTime) {
+			// This package last updated after some of its inputs. Send it back to update again.
+			queueUpdate(pkg)
+			continue workerLoop
+		}
+
+		if !pkg.BuiltModTime.IsZero() && !inputsModTime.After(pkg.BuiltModTime) && pkg.CurrentBuildID == pkg.DesiredBuildID {
+			// No need to build, as this package is already up to date.
+			if Opts.Verbose {
+				alog.Printf("@(dim:No need to build) %s\n", pkg.Name)
+				printTimes()
+			}
+			chState(pkg, PackageReady)
+			triggerDependentPackages(pkg.ImportName)
+			continue workerLoop
+		}
+
+		if !inputsModTime.After(pkg.LastBuildInputsModTime) {
+			if Opts.Verbose {
+				// Sometimes, package updates/builds can be unnecessary triggered repeatedly. For example, sometimes builds themselves
+				// can cause files to be touched in depended-upon packages, resulting in a cycle of endless failed builds (successful
+				// builds would not be retried already because we would compare the timestamps and determine that the target was up to
+				// date).
+				alog.Printf("@(dim:Not building) %s@(dim:, as the package and its dependencies have not changed since its last build, which failed.)\n", pkg.Name)
+			}
+			chState(pkg, PackageDirtyIdle)
+			continue workerLoop
+		}
+
+		if Opts.Verbose && !pkg.BuiltModTime.IsZero() {
+			alog.Printf("@(dim:Building) %s@(dim::)\n", pkg.Name)
+			printTimes()
+		}
+		if Opts.Verbose && pkg.CurrentBuildID != "" && pkg.CurrentBuildID != pkg.DesiredBuildID {
+			alog.Printf("@(dim:%s) Build ID Desired %s\n", pkg.Name, pkg.DesiredBuildID)
+			alog.Printf("@(dim:%s) Build ID Current %s\n", pkg.Name, pkg.CurrentBuildID)
+		}
+		chState(pkg, PackageBuilding)
+		numBuildsActive++
+		pkg.LastBuildInputsModTime = inputsModTime
+		go pkg.build()
 	}
 }
 
@@ -352,6 +436,9 @@ func queueUpdate(p *Package) {
 }
 
 func queueBuild(p *Package) {
+	if p.IsStandard {
+		return
+	}
 	if enableSanityChecks {
 		for _, pkg := range buildQueue {
 			if pkg == p {
@@ -424,7 +511,7 @@ func diagnoseNotReady(parent *Package, p *Package) {
 
 func diagnoseCircularDependency(p *Package) {
 	importNameQuoted := strconv.Quote(p.ImportName)
-	absPkgPath := filepath.Join(srcRoot, p.Name)
+	absPkgPath := p.getAbsSrcPath()
 	files, _ := ioutil.ReadDir(absPkgPath)
 	for _, filename := range files {
 		if filepath.Ext(filename.Name()) != ".go" {
@@ -448,6 +535,9 @@ func diagnoseCircularDependency(p *Package) {
 func getMostRecentDep(p *Package) (*Package, error) {
 	var recentDep *Package
 	for importName, _ := range p.Imports.Raw() {
+		if importName == "C" {
+			continue
+		}
 		depPackage := resolveImport(p, importName)
 		if depPackage == nil || depPackage.State != PackageReady {
 			if depPackage == p {
@@ -470,20 +560,69 @@ func getMostRecentDep(p *Package) (*Package, error) {
 
 // Resolve this dependency, looking for any possible vendored providers.
 func resolveImport(p *Package, importName string) *Package {
-	rootPath := p.Name
+	rootPath := p.Name + "/"
 	for {
-		vendorOption := rootPath + "/vendor/" + importName
+		vendorOption := rootPath + "vendor/" + importName
 		depPackage, exists := packages[vendorOption]
 		if exists {
 			return depPackage
 		}
-		lastIndex := strings.LastIndex(rootPath, "/")
-		if lastIndex == -1 {
+		if len(rootPath) == 0 {
 			break
 		}
-		rootPath = rootPath[:lastIndex]
+		lastIndex := strings.LastIndex(rootPath[:len(rootPath)-1], "/")
+		if lastIndex == -1 {
+			rootPath = ""
+		} else {
+			rootPath = rootPath[:lastIndex+1]
+		}
 	}
 	return packages[importName]
+}
+
+// This mirrors https://github.com/golang/go/blob/13c35a1b204f6e580b220e0df409a2c186e648a4/src/cmd/go/internal/load/pkg.go#L1026-L1075
+func calculateDeps(p *Package) (DepSlice, error) {
+	deps := map[string]*Package{}
+	var recurse func(pkg *Package) error
+	recurse = func(pkg *Package) error {
+		if pkg.Imports == nil {
+			return nil
+		}
+		for importName := range pkg.Imports.Raw() {
+			if importName == "C" {
+				continue
+			}
+			depPkg := resolveImport(pkg, importName)
+			if depPkg == nil {
+				if beVerbose() {
+					alog.Printf("@(dim:Could not find dependency) %s @(dim:for) %s\n", importName, pkg.Name)
+				}
+				return dependenciesNotReadyError
+			}
+			if _, ok := deps[depPkg.Name]; !ok {
+				deps[depPkg.Name] = depPkg
+				err := recurse(depPkg)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	err := recurse(p)
+	if err != nil {
+		return nil, err
+	}
+
+	depSlice := make(DepSlice, 0, len(deps))
+	for _, pkg := range deps {
+		depSlice = append(depSlice, Dep{
+			Name:    pkg.Name,
+			BuildID: pkg.DesiredBuildID,
+		})
+	}
+	sort.Sort(depSlice)
+	return depSlice, nil
 }
 
 func printStartupSummary() {
@@ -504,13 +643,13 @@ var buildExtensions = stringset.New(".go", ".c", ".cc", ".cxx", ".cpp", ".h", ".
 func processPathTriggers(notifyChan chan watcher.PathEvent) {
 	for pathEvent := range notifyChan {
 		path := pathEvent.Path
-		moduleName, err := filepath.Rel(srcRoot, filepath.Dir(path))
+		moduleName, err := filepath.Rel(goPathSrcRoot, filepath.Dir(path))
 		if err != nil {
 			alog.Bail(err)
 		}
 		if buildExtensions.Has(filepath.Ext(path)) {
 			if Opts.Verbose {
-				alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", moduleName, path)
+				// alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", moduleName, path)
 			}
 			moduleUpdateChan <- moduleName
 		}
@@ -555,7 +694,7 @@ func main() {
 	ctx.Quote("go-version", "go", "version")
 
 	listener := watcher.NewListener()
-	listener.Path = srcRoot
+	listener.Path = goPathSrcRoot
 	// "_workspace" is a kludge to avoid recursing into Godeps workspaces
 	// "node_modules" is a kludge to avoid walking into typically-huge node_modules trees
 	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "_workspace", "etld")
@@ -569,6 +708,13 @@ func main() {
 
 	go processPathTriggers(listener.NotifyChan)
 	go dispatcher()
+
+	for _, pkgName := range goStdLibPackagesSlice {
+		if pkgName == "C" {
+			continue
+		}
+		moduleUpdateChan <- pkgName
+	}
 
 	<-sighup
 	startupLogger.Close()
