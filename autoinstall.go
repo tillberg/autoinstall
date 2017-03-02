@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io/ioutil"
@@ -62,6 +63,7 @@ var numUpdatesActive = 0
 var startupLogger *alog.Logger
 var neverChan = make(<-chan time.Time)
 var lastModuleUpdateTime time.Time
+var goStdLibPackages = stringset.New()
 
 func numWorkersActive() int {
 	return numUpdatesActive + numBuildsActive
@@ -707,16 +709,10 @@ func main() {
 	// Delete any straggler .autoinstall-tmp files
 	filepath.Walk(filepath.Join(goPath, "bin"), cleanAutoinstallTmpFiles)
 	filepath.Walk(filepath.Join(goPath, "bin"), cleanAutoinstallTmpFiles)
+	go filepath.Walk(filepath.Join(build.Default.GOROOT, "src"), initStandardPackages)
 
 	go processPathTriggers(listener.NotifyChan)
 	go dispatcher()
-
-	for _, pkgName := range goStdLibPackagesSlice {
-		if pkgName == "C" {
-			continue
-		}
-		moduleUpdateChan <- pkgName
-	}
 
 	<-sighup
 	startupLogger.Close()
@@ -730,6 +726,24 @@ func cleanAutoinstallTmpFiles(path string, info os.FileInfo, err error) error {
 		err := os.Remove(path)
 		if err != nil {
 			alog.Printf("@(error:Error deleting temp file %s: %v)", path, err)
+		}
+	}
+	return nil
+}
+
+func initStandardPackages(path string, info os.FileInfo, err error) error {
+	if err != nil {
+		return nil
+	}
+	if info.IsDir() {
+		pkgName, err := filepath.Rel(filepath.Join(build.Default.GOROOT, "src"), path)
+		if err != nil {
+			alog.Printf("Error calculating relative path from %s to %s: %v\n", build.Default.GOROOT, path)
+			return err
+		}
+		if len(pkgName) > 0 {
+			goStdLibPackages.Add(pkgName)
+			moduleUpdateChan <- pkgName
 		}
 	}
 	return nil
