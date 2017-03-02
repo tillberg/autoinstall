@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"go/parser"
 	"go/token"
@@ -260,16 +261,22 @@ func dispatcher() {
 
 // var squelchWarningTargetNames = stringset.New("example", "_example", "examples", "_examples", "simple", "_simple", "test", "_test", "testdata", "_testdata", "basic", "hello")
 var knownNameCollisions = stringset.New()
+var dimComma = alog.Colorify("@(dim:,) ")
 
-func warnNameCollision(a, b, target string) {
+func warnNameCollision(pkgNames []string, target string) {
 	// if !beVerbose() && squelchWarningTargetNames.Has(target) {
 	// 	return
 	// }
-	if b < a {
-		a, b = b, a
-	}
-	if finishedInitialPass || knownNameCollisions.Add(a+":"+b) {
-		alog.Printf("@(warn:Program name collision:) %s @(warn:and) %s @(warn:->) %s\n", a, b, target)
+	if finishedInitialPass || knownNameCollisions.Add(target) {
+		sort.Strings(pkgNames)
+		buf := bytes.Buffer{}
+		for i, name := range pkgNames {
+			if i != 0 {
+				buf.WriteString(dimComma)
+			}
+			buf.WriteString(name)
+		}
+		alog.Printf("%s @(warn:has multiple potential source packages:) %s\n", target, buf.String())
 	}
 }
 
@@ -312,6 +319,7 @@ workerLoop:
 
 		deps, err := calculateDeps(pkg)
 		if err != nil {
+			// calculateDeps logs an error already
 			chState(pkg, PackageDirtyIdle)
 			continue workerLoop
 		}
@@ -321,27 +329,20 @@ workerLoop:
 			// alog.Printf("@(dim:%s) Build ID Desired %s\n", pkg.Name, pkg.DesiredBuildID)
 			// alog.Printf("@(dim:%s) Build ID Current %s\n", pkg.Name, pkg.CurrentBuildID)
 			targetPath := pkg.getAbsTargetPath()
+			collisions := stringset.New()
 			for _, otherPkg := range packages {
 				if pkg != otherPkg && targetPath == otherPkg.getAbsTargetPath() {
-					if otherPkg.DesiredBuildID == "" {
-						deps, err := calculateDeps(otherPkg)
-						if err != nil {
-							chState(pkg, PackageDirtyIdle)
-							continue workerLoop
-						}
-						otherPkg.computeDesiredBuildID(deps)
+					collisions.Add(otherPkg.Name)
+				}
+			}
+			if collisions.Len() > 0 {
+				warnNameCollision(append(collisions.All(), pkg.Name), filepath.Base(targetPath))
+				if !finishedInitialPass {
+					if beVerbose() {
+						alog.Printf("@(warn:Skipping) %s @(warn:because another source package could be up to date.)\n", pkg.Name)
 					}
-					warnNameCollision(pkg.Name, otherPkg.Name, filepath.Base(targetPath))
-					// alog.Printf("@(dim:%s) Build ID Desired %s\n", otherPkg.Name, otherPkg.DesiredBuildID)
-					// alog.Printf("@(dim:%s) Build ID Current %s\n", otherPkg.Name, otherPkg.CurrentBuildID)
-					if !finishedInitialPass && otherPkg.DesiredBuildID == pkg.CurrentBuildID || otherPkg.CurrentBuildID == pkg.DesiredBuildID {
-						if beVerbose() {
-							alog.Printf("@(warn:Skipping %s because colliding package %s is up to date)\n", pkg.Name, otherPkg.Name)
-						}
-						// don't overwrite colliding programs during the initial pass when it's already up-to-date for one of the variations
-						chState(pkg, PackageDirtyIdle)
-						continue workerLoop
-					}
+					chState(pkg, PackageDirtyIdle)
+					continue workerLoop
 				}
 			}
 		}
