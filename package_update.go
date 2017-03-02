@@ -73,15 +73,13 @@ func update(pkgName string) {
 					return
 				}
 				modTime := fileinfo.ModTime()
-				if modTime.After(pUpdate.UpdateStartTime) {
-					if modTime.After(time.Now()) {
-						alog.Printf("@(warn:File has future modification time: %q mod %s)\n", path, modTime.String())
-						alog.Printf("@(warn:Correct triggering of builds depends on correctly-set system clocks.)\n")
-						// Assume that it was not actually modified in the future, but that the system clock is just wrong
-						// This will allow us to build the package, but we'll keep re-building every time autoinstall
-						// restarts until the system clock gets past the file's time.
-						modTime = pUpdate.UpdateStartTime.Add(-1 * time.Microsecond)
-					}
+				if modTime.After(pUpdate.UpdateStartTime) && modTime.After(time.Now()) {
+					alog.Printf("@(warn:File has future modification time: %q mod %s)\n", path, modTime.String())
+					alog.Printf("@(warn:Correct triggering of builds depends on correctly-set system clocks.)\n")
+					// Assume that it was not actually modified in the future, but that the system clock is just wrong
+					// This will allow us to build the package, but we'll keep re-building every time autoinstall
+					// restarts until the system clock gets past the file's time.
+					modTime = pUpdate.UpdateStartTime.Add(-1 * time.Microsecond)
 				}
 				if modTime.After(pUpdate.SourceModTime) {
 					pUpdate.SourceModTime = modTime
@@ -117,7 +115,7 @@ func update(pkgName string) {
 		pUpdate.UpdateError = err
 		return
 	} else if err == nil {
-		pUpdate.BuiltModTime = fileinfo.ModTime()
+		pUpdate.TargetModTime = fileinfo.ModTime()
 		var err error
 		pUpdate.CurrentBuildID, err = buildid.ReadBuildID(pUpdate.IsProgram, targetPath)
 		if err != nil {
@@ -129,7 +127,7 @@ func update(pkgName string) {
 
 func (p *Package) mergeUpdate(pUpdate *Package) {
 	p.Imports = pUpdate.Imports
-	p.BuiltModTime = pUpdate.BuiltModTime
+	p.TargetModTime = pUpdate.TargetModTime
 	p.SourceModTime = pUpdate.SourceModTime
 	p.RecentSrcName = pUpdate.RecentSrcName
 	p.UpdateStartTime = pUpdate.UpdateStartTime
@@ -154,17 +152,10 @@ func (p *Package) mergeUpdate(pUpdate *Package) {
 func (p *Package) computeDesiredBuildID(deps DepSlice) {
 	h := sha1.New()
 
-	// if p.Name == "github.com/grafana/grafana" {
-	// fmt.Fprintf(os.Stderr, "\nSHA1 %s\n", p.Name)
-	// }
-
 	// Include the list of files compiled as part of the package.
 	// This lets us detect removed files. See issue 3895.
 	for _, file := range p.AllSources {
 		fmt.Fprintf(h, "file %s\n", file)
-		// if p.Name == "github.com/grafana/grafana" {
-		// fmt.Fprintf(os.Stderr, "file %s\n", file)
-		// }
 	}
 
 	// Include the content of runtime/internal/sys/zversion.go in the hash
@@ -188,9 +179,6 @@ func (p *Package) computeDesiredBuildID(deps DepSlice) {
 	// This is also a better fix for issue 8290.
 	for _, dep := range deps {
 		fmt.Fprintf(h, "dep %s %s\n", dep.Name, dep.BuildID)
-		// if p.Name == "github.com/grafana/grafana" {
-		// fmt.Fprintf(os.Stderr, "dep %s %s\n", dep.Name, dep.BuildID)
-		// }
 	}
 
 	p.DesiredBuildID = fmt.Sprintf("%x", h.Sum(nil))

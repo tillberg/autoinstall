@@ -23,7 +23,7 @@ type Package struct {
 	HasTests   bool                 // True if the package has any _test.go files
 	AllSources []string             // All source files, for input into BuildId
 
-	BuiltModTime    time.Time // The time that the most recent build was started; should also be the ModTime on the target file
+	TargetModTime   time.Time
 	SourceModTime   time.Time // The ModTime of the most recently updated source file in this package
 	RecentSrcName   string    // Name of the most recent source file; its ModTime equals the package's SourceModTime
 	UpdateStartTime time.Time // The time that the current update started

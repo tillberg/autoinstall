@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,22 +17,20 @@ func (p *Package) build() {
 	timer := alog.NewTimer()
 	absPath := p.getAbsSrcPath()
 	if beVerbose() {
-		alog.Printf("@(dim:Building) %s@(dim:...)\n", p.Name)
+		alog.Printf("@(dim:Installing) %s@(dim:...)\n", p.Name)
 	}
 	targetPath := p.getAbsTargetPath()
-	tmpTargetPath := targetPath + "." + RandStr(10) + ".autoinstall-tmp"
 	fail := func() {
-		os.Remove(tmpTargetPath)
 		buildFailure <- p
 	}
-	args := []string{"go", "build", "-o", tmpTargetPath}
+	args := []string{"go", "install", "-v"}
 	if Opts.Tags != "" {
 		args = append(args, "-tags")
 		args = append(args, Opts.Tags)
 	}
 	var err error
 	if beVerbose() {
-		err = ctx.QuoteCwd("go-build:"+p.Name, absPath, args...)
+		err = ctx.QuoteCwd("go-install:"+p.Name, absPath, args...)
 	} else {
 		_, _, err = ctx.RunCwd(absPath, args...)
 	}
@@ -47,26 +44,13 @@ func (p *Package) build() {
 				return
 			}
 		}
-		alog.Printf("@(error:Failed to install) %s@(error:: %s)\n", p.Name, err)
+		alog.Printf("@(error:Failed to build) %s@(error:: %s)\n", p.Name, err)
 		fail()
 		return
 	}
-	err = os.Chtimes(tmpTargetPath, time.Now(), p.UpdateStartTime)
+	err = os.Chtimes(targetPath, time.Now(), p.UpdateStartTime)
 	if err != nil {
-		alog.Printf("@(error:Error setting atime/mtime of) %s@(error::) %v\n", tmpTargetPath, err)
-		fail()
-		return
-	}
-	targetDir := filepath.Dir(targetPath)
-	err = os.MkdirAll(targetDir, 0750)
-	if err != nil {
-		alog.Printf("@(error:Error creating directory %s for build target: %v)\n", targetDir, err)
-		fail()
-		return
-	}
-	err = os.Rename(tmpTargetPath, targetPath)
-	if err != nil {
-		alog.Printf("@(error:Error renaming %q to %q: %v)\n", tmpTargetPath, targetPath, err)
+		alog.Printf("@(error:Error setting atime/mtime of) %s@(error::) %v\n", targetPath, err)
 		fail()
 		return
 	}

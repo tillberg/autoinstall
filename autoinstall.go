@@ -22,7 +22,7 @@ import (
 )
 
 const enableSanityChecks = false
-const DATE_FORMAT = "2006-01-02T15:04:05"
+const DATE_FORMAT = "2006-01-02T15:04:05.000000"
 
 var Opts struct {
 	Verbose      bool   `short:"v" long:"verbose" description:"Show verbose debug information"`
@@ -160,7 +160,7 @@ func dispatcher() {
 			switch p.State {
 			case PackageBuilding:
 				chState(p, PackageReady)
-				p.BuiltModTime = p.UpdateStartTime
+				p.TargetModTime = p.UpdateStartTime
 				p.LastBuildInputsModTime = time.Time{}
 				triggerDependentPackages(p.ImportName)
 			case PackageBuildingButDirty:
@@ -269,7 +269,7 @@ func warnNameCollision(a, b, target string) {
 		a, b = b, a
 	}
 	if finishedInitialPass || knownNameCollisions.Add(a+":"+b) {
-		alog.Printf("@(warn:Program name collsion:) %s @(warn:and) %s @(warn:->) %s\n", a, b, target)
+		alog.Printf("@(warn:Program name collision:) %s @(warn:and) %s @(warn:->) %s\n", a, b, target)
 	}
 }
 
@@ -348,15 +348,16 @@ workerLoop:
 
 		var inputsModTime time.Time
 		if recentDep != nil {
-			inputsModTime = recentDep.BuiltModTime
+			inputsModTime = recentDep.TargetModTime
 		}
 		if pkg.SourceModTime.After(inputsModTime) {
 			inputsModTime = pkg.SourceModTime
 		}
+
 		printTimes := func() {
-			alog.Printf("    @(dim:Target ModTime) @(time:%s)\n", pkg.BuiltModTime.Format(DATE_FORMAT))
+			alog.Printf("    @(dim:Target ModTime) @(time:%s)\n", pkg.TargetModTime.Format(DATE_FORMAT))
 			if recentDep != nil {
-				alog.Printf("    @(dim:  deps ModTime) @(time:%s) %s\n", recentDep.BuiltModTime.Format(DATE_FORMAT), recentDep.Name)
+				alog.Printf("    @(dim:  deps ModTime) @(time:%s) %s\n", recentDep.TargetModTime.Format(DATE_FORMAT), recentDep.Name)
 			} else {
 				alog.Printf("    @(dim:  deps ModTime) n/a @(dim:no dependencies)\n")
 			}
@@ -369,7 +370,7 @@ workerLoop:
 			continue workerLoop
 		}
 
-		if !pkg.BuiltModTime.IsZero() && !inputsModTime.After(pkg.BuiltModTime) && pkg.CurrentBuildID == pkg.DesiredBuildID {
+		if !pkg.TargetModTime.IsZero() && !inputsModTime.After(pkg.TargetModTime) && pkg.CurrentBuildID == pkg.DesiredBuildID {
 			// No need to build, as this package is already up to date.
 			if Opts.Verbose {
 				alog.Printf("@(dim:No need to build) %s\n", pkg.Name)
@@ -392,7 +393,7 @@ workerLoop:
 			continue workerLoop
 		}
 
-		if Opts.Verbose && !pkg.BuiltModTime.IsZero() {
+		if Opts.Verbose && !pkg.TargetModTime.IsZero() {
 			alog.Printf("@(dim:Building) %s@(dim::)\n", pkg.Name)
 			printTimes()
 		}
@@ -551,7 +552,7 @@ func getMostRecentDep(p *Package) (*Package, error) {
 			}
 			return nil, dependenciesNotReadyError
 		}
-		if recentDep == nil || depPackage.BuiltModTime.After(recentDep.BuiltModTime) {
+		if recentDep == nil || depPackage.TargetModTime.After(recentDep.TargetModTime) {
 			recentDep = depPackage
 		}
 	}
@@ -648,8 +649,8 @@ func processPathTriggers(notifyChan chan watcher.PathEvent) {
 			alog.Bail(err)
 		}
 		if buildExtensions.Has(filepath.Ext(path)) {
-			if Opts.Verbose {
-				// alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", moduleName, path)
+			if Opts.Verbose && finishedInitialPass {
+				alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", moduleName, path)
 			}
 			moduleUpdateChan <- moduleName
 		}
