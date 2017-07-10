@@ -28,6 +28,10 @@ func (p *Package) build() {
 		args = append(args, "-tags")
 		args = append(args, Opts.Tags)
 	}
+	if Opts.LDFlags != "" {
+		args = append(args, "-ldflags")
+		args = append(args, Opts.LDFlags)
+	}
 	var err error
 	if beVerbose() {
 		err = ctx.QuoteCwd("go-install:"+p.Name, absPath, args...)

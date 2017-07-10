@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jessevdk/go-flags"
@@ -34,6 +35,7 @@ var Opts struct {
 	Tags         string `long:"tags" description:"-tags parameter to pass to go-build"`
 	TestArgShort bool   `long:"test-arg-short" description:"Pass the -short flag to go test"`
 	TestArgRun   string `long:"test-arg-run" description:"Pass the -run flag to go test with this value"`
+	LDFlags      string `long:"ldflags" description:"Pass the -ldflags to go install with this value"`
 }
 
 var goPath = (func() string {
@@ -52,7 +54,7 @@ var buildQueue = []*Package{}
 var buildSuccess = make(chan *Package)
 var buildFailure = make(chan *Package)
 var updateFinished = make(chan *Package)
-var moduleUpdateChan = make(chan string)
+var moduleUpdateChan = make(chan string) // Buffer size must be greater than # of packages in stdlib
 var finishedInitialPass = false
 var numBuildSucesses = 0
 var numBuildFailures = 0
@@ -63,7 +65,15 @@ var numUpdatesActive = 0
 var startupLogger *alog.Logger
 var neverChan = make(<-chan time.Time)
 var lastModuleUpdateTime time.Time
-var goStdLibPackages = stringset.New()
+
+var goStdLibPackages struct {
+	*stringset.StringSet
+	sync.RWMutex
+}
+
+func init() {
+	goStdLibPackages.StringSet = stringset.New()
+}
 
 func numWorkersActive() int {
 	return numUpdatesActive + numBuildsActive
@@ -693,6 +703,15 @@ func main() {
 	if !Opts.Verbose {
 		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
+	if len(Opts.LDFlags) >= 2 && strings.HasPrefix(Opts.LDFlags, "'") && strings.HasSuffix(Opts.LDFlags, "'") {
+		Opts.LDFlags = Opts.LDFlags[1 : len(Opts.LDFlags)-1]
+	}
+
+	initStdLibDone := make(chan struct{}, 1)
+	go func() {
+		filepath.Walk(filepath.Join(build.Default.GOROOT, "src"), initStandardPackages)
+		initStdLibDone <- struct{}{}
+	}()
 
 	ctx := bismuth2.New()
 	ctx.Quote("go-version", "go", "version")
@@ -709,10 +728,18 @@ func main() {
 	// Delete any straggler .autoinstall-tmp files
 	filepath.Walk(filepath.Join(goPath, "bin"), cleanAutoinstallTmpFiles)
 	filepath.Walk(filepath.Join(goPath, "bin"), cleanAutoinstallTmpFiles)
-	go filepath.Walk(filepath.Join(build.Default.GOROOT, "src"), initStandardPackages)
+
+	go dispatcher()
+
+	<-initStdLibDone
+	goStdLibPackages.RLock()
+	allStdPackages := goStdLibPackages.All()
+	goStdLibPackages.RUnlock()
+	for _, pkgName := range allStdPackages {
+		moduleUpdateChan <- pkgName
+	}
 
 	go processPathTriggers(listener.NotifyChan)
-	go dispatcher()
 
 	<-sighup
 	startupLogger.Close()
@@ -742,9 +769,16 @@ func initStandardPackages(path string, info os.FileInfo, err error) error {
 			return err
 		}
 		if len(pkgName) > 0 {
+			goStdLibPackages.Lock()
 			goStdLibPackages.Add(pkgName)
-			moduleUpdateChan <- pkgName
+			goStdLibPackages.Unlock()
 		}
 	}
 	return nil
+}
+
+func isGoStdLibPackage(pkg string) bool {
+	goStdLibPackages.RLock()
+	defer goStdLibPackages.RUnlock()
+	return goStdLibPackages.Has(pkg)
 }

@@ -19,7 +19,7 @@ func update(pkgName string) {
 		updateFinished <- pUpdate
 	}()
 	pUpdate.UpdateStartTime = time.Now()
-	pUpdate.IsStandard = goStdLibPackages.Has(pkgName)
+	pUpdate.IsStandard = isGoStdLibPackage(pkgName)
 	pUpdate.Imports = stringset.New()
 	absPkgPath := pUpdate.getAbsSrcPath()
 	pkg, err := build.ImportDir(absPkgPath, build.ImportComment)
@@ -120,6 +120,12 @@ func update(pkgName string) {
 		pUpdate.CurrentBuildID, err = buildid.ReadBuildID(pUpdate.IsProgram, targetPath)
 		if err != nil {
 			alog.Printf("@(error:Error reading BuildID for %s: %v)\n", pkgName, err)
+			err = os.Remove(targetPath)
+			if err != nil {
+				alog.Printf("@(error:Failed to remove %s: %v)\n", targetPath, err)
+			} else {
+				alog.Printf("@(warn:Removed %s after failing to read BuildID)\n", targetPath)
+			}
 		}
 		// alog.Println(pUpdate.CurrentBuildID)
 	}
