@@ -446,7 +446,7 @@ func queueUpdate(p *Package, reason string) {
 			}
 		}
 	}
-	if beVerbose() {
+	if Opts.Verbose && beVerbose() {
 		alog.Printf("@(dim:Queued update for %s: %s)\n", p.Name, reason)
 	}
 	chState(p, PackageUpdateQueued)
@@ -464,7 +464,7 @@ func queueBuild(p *Package, reason string) {
 			}
 		}
 	}
-	if beVerbose() {
+	if Opts.Verbose && beVerbose() {
 		alog.Printf("@(dim:Queued build for %s: %s)\n", p.Name, reason)
 	}
 	chState(p, PackageBuildQueued)
