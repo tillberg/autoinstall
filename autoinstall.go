@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"go/build"
 	"go/parser"
 	"go/token"
@@ -177,7 +178,7 @@ func dispatcher() {
 				p.LastBuildInputsModTime = time.Time{}
 				triggerDependentPackages(p.ImportName)
 			case PackageBuildingButDirty:
-				queueUpdate(p)
+				queueUpdate(p, fmt.Sprintf("sources changed during successful build"))
 			default:
 				alog.Panicf("buildSuccess with state %s", p.State)
 			}
@@ -188,7 +189,7 @@ func dispatcher() {
 			case PackageBuilding:
 				chState(p, PackageDirtyIdle)
 			case PackageBuildingButDirty:
-				queueUpdate(p)
+				queueUpdate(p, fmt.Sprintf("sources changed during failed build"))
 			default:
 				alog.Panicf("buildFailure with state %s", p.State)
 			}
@@ -212,10 +213,10 @@ func dispatcher() {
 					}
 				} else {
 					p.mergeUpdate(pUpdate)
-					queueBuild(p)
+					queueBuild(p, fmt.Sprintf("update finished successfully"))
 				}
 			case PackageUpdatingButDirty:
-				queueUpdate(p)
+				queueUpdate(p, fmt.Sprintf("sources changed while updating"))
 			default:
 				alog.Panicf("updateFinished with state %s", p.State)
 			}
@@ -230,7 +231,7 @@ func dispatcher() {
 			}
 			switch p.State {
 			case PackageReady, PackageDirtyIdle:
-				queueUpdate(p)
+				queueUpdate(p, fmt.Sprintf("sources changed"))
 			case PackageUpdating:
 				chState(p, PackageUpdatingButDirty)
 			case PackageBuilding:
@@ -240,7 +241,7 @@ func dispatcher() {
 			case PackageBuildQueued:
 				// Has a build queued, but we need to do update first. Splice it out of the buildQueue, then queue the update.
 				unqueueBuild(p)
-				queueUpdate(p)
+				queueUpdate(p, fmt.Sprintf("sources changed before build"))
 			default:
 				alog.Panicf("moduleUpdateChan encountered unexpected state %s", p.State)
 			}
@@ -379,7 +380,7 @@ workerLoop:
 
 		if !pkg.UpdateStartTime.After(inputsModTime) {
 			// This package last updated after some of its inputs. Send it back to update again.
-			queueUpdate(pkg)
+			queueUpdate(pkg, fmt.Sprintf("sources modified after update start time"))
 			continue workerLoop
 		}
 
@@ -437,7 +438,7 @@ func chState(p *Package, state PackageState) {
 	p.State = state
 }
 
-func queueUpdate(p *Package) {
+func queueUpdate(p *Package, reason string) {
 	if enableSanityChecks {
 		for _, pkg := range updateQueue {
 			if pkg == p {
@@ -445,11 +446,14 @@ func queueUpdate(p *Package) {
 			}
 		}
 	}
+	if beVerbose() {
+		alog.Printf("@(dim:Queued update for %s: %s)\n", p.Name, reason)
+	}
 	chState(p, PackageUpdateQueued)
 	updateQueue = append(updateQueue, p)
 }
 
-func queueBuild(p *Package) {
+func queueBuild(p *Package, reason string) {
 	if p.IsStandard {
 		return
 	}
@@ -459,6 +463,9 @@ func queueBuild(p *Package) {
 				alog.Panicf("Package %s already in buildQueue, cannot queue twice", p.Name)
 			}
 		}
+	}
+	if beVerbose() {
+		alog.Printf("@(dim:Queued build for %s: %s)\n", p.Name, reason)
 	}
 	chState(p, PackageBuildQueued)
 	buildQueue = append(buildQueue, p)
@@ -491,9 +498,9 @@ func triggerDependentPackages(importName string) {
 			switch pkg.State {
 			case PackageReady, PackageDirtyIdle:
 				if pkg.WasUpdated {
-					queueBuild(pkg)
+					queueBuild(pkg, fmt.Sprintf("triggered deps of %s", importName))
 				} else {
-					queueUpdate(pkg)
+					queueUpdate(pkg, fmt.Sprintf("triggered deps of %s", importName))
 				}
 			case PackageUpdateQueued, PackageUpdatingButDirty, PackageBuildingButDirty:
 				// Package is already queued for update (or will be), so no need for change
@@ -517,7 +524,7 @@ func diagnoseNotReady(parent *Package, p *Package) {
 	case PackageDirtyIdle:
 		alog.Printf("@(dim:Can't build) %s @(dim:because) %s @(dim:isn't ready.)\n", parent.Name, p.Name)
 		p.LastBuildInputsModTime = time.Time{} // Force a build even if a previous one failed, so that we can get the output again
-		queueUpdate(p)
+		queueUpdate(p, fmt.Sprintf("forced via diagnoseNotReady from parent %s", parent.Name))
 	default:
 		alog.Panicf("diagnoseNotReady encountered unexpected state %s", p.State)
 	}
