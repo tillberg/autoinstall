@@ -29,14 +29,15 @@ const enableSanityChecks = false
 const DATE_FORMAT = "2006-01-02T15:04:05.000000"
 
 var Opts struct {
-	Verbose      bool   `short:"v" long:"verbose" description:"Show verbose debug information"`
-	NoColor      bool   `long:"no-color" description:"Disable ANSI colors"`
-	MaxWorkers   int    `long:"max-workers" description:"Max number of build workers"`
-	RunTests     bool   `long:"run-tests" description:"Run tests after building packages (after initial pass)"`
-	Tags         string `long:"tags" description:"-tags parameter to pass to go-build"`
-	TestArgShort bool   `long:"test-arg-short" description:"Pass the -short flag to go test"`
-	TestArgRun   string `long:"test-arg-run" description:"Pass the -run flag to go test with this value"`
-	LDFlags      string `long:"ldflags" description:"Pass the -ldflags to go install with this value"`
+	Verbose        bool   `short:"v" long:"verbose" description:"Show verbose debug information"`
+	NoColor        bool   `long:"no-color" description:"Disable ANSI colors"`
+	MaxWorkers     int    `long:"max-workers" description:"Max number of build workers"`
+	RunTests       bool   `long:"run-tests" description:"Run tests after building packages (after initial pass)"`
+	Tags           string `long:"tags" description:"-tags parameter to pass to go-build"`
+	TestArgShort   bool   `long:"test-arg-short" description:"Pass the -short flag to go test"`
+	TestArgRun     string `long:"test-arg-run" description:"Pass the -run flag to go test with this value"`
+	TestArgTimeout string `long:"test-arg-timeout" description:"Pass the -timeout flag to go test with this value"`
+	LDFlags        string `long:"ldflags" description:"Pass the -ldflags to go install with this value"`
 }
 
 var goPath = (func() string {
@@ -663,6 +664,9 @@ var buildExtensions = stringset.New(".go", ".c", ".cc", ".cxx", ".cpp", ".h", ".
 
 func processPathTriggers(notifyChan chan watcher.PathEvent) {
 	for pathEvent := range notifyChan {
+		// if Opts.Verbose {
+		// 	alog.Printf("@(dim:Path event: %s %s)\n", pathEvent.Op.String(), pathEvent.Path)
+		// }
 		path := pathEvent.Path
 		moduleName, err := filepath.Rel(goPathSrcRoot, filepath.Dir(path))
 		if err != nil {

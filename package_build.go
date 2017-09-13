@@ -73,6 +73,10 @@ func (p *Package) build() {
 			args = append(args, "-run")
 			args = append(args, Opts.TestArgRun)
 		}
+		if Opts.TestArgTimeout != "" {
+			args = append(args, "-timeout")
+			args = append(args, Opts.TestArgTimeout)
+		}
 		go ctx.QuoteCwd("go-test:"+p.Name, absPath, args...)
 	}
 
