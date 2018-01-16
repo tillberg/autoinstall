@@ -152,6 +152,10 @@ func (p *Package) mergeUpdate(pUpdate *Package) {
 		}
 		p.DesiredBuildID = p.CurrentBuildID
 	}
+	if len(p.AllSources) == 0 {
+		p.State = PackageReady
+		p.DesiredBuildID = p.CurrentBuildID
+	}
 }
 
 // computeBuildID is borrowed from https://github.com/golang/go/blob/13c35a1b204f6e580b220e0df409a2c186e648a4/src/cmd/go/internal/load/pkg.go#L1622-L1670

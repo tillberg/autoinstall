@@ -758,9 +758,10 @@ func main() {
 
 func cleanAutoinstallTmpFiles(path string, info os.FileInfo, err error) error {
 	if err != nil {
-		return nil
+		return err
 	}
-	if filepath.Base(path) == ".autoinstall-tmp" {
+	if filepath.Ext(path) == ".autoinstall-tmp" {
+		alog.Printf("@(dim:Cleaning up old .autoinstall-tmp file %s)\n", path)
 		err := os.Remove(path)
 		if err != nil {
 			alog.Printf("@(error:Error deleting temp file %s: %v)", path, err)
