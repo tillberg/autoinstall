@@ -4,9 +4,9 @@ package main
 
 import "fmt"
 
-const _PackageState_name = "PackageDirtyIdlePackageUpdateQueuedPackageUpdatingPackageUpdatingButDirtyPackageBuildQueuedPackageBuildingPackageBuildingButDirtyPackageReady"
+const _PackageState_name = "PackageDirtyIdlePackageBuildQueuedPackageBuildingPackageBuildingButDirtyPackageReady"
 
-var _PackageState_index = [...]uint8{0, 16, 35, 50, 73, 91, 106, 129, 141}
+var _PackageState_index = [...]uint8{0, 16, 34, 49, 72, 84}
 
 func (i PackageState) String() string {
 	if i < 0 || i >= PackageState(len(_PackageState_index)-1) {
