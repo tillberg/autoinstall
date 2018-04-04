@@ -193,7 +193,7 @@ func dispatcher() {
 			if p == nil {
 				if !pNew.ShouldBuild {
 					// Don't add non-command packages to the index. Just trigger dependencies.
-					triggerDependentPackages(pNew.Name)
+					triggerDependentPackages(pNew.Name, pNew.FileChange)
 					continue
 				}
 				p = pNew
@@ -247,7 +247,7 @@ func removeFromIndex(pName string) {
 	delete(packages, pName)
 	// Trigger updates of any packages that depend on this import name
 	// XXX this should be modified if triggerDependentPackages is made more specific in the future
-	triggerDependentPackages(pName)
+	triggerDependentPackages(pName, true)
 }
 
 func pushBuildWork() {
@@ -305,13 +305,13 @@ func queueBuild(p *Package, reason string) {
 	buildQueue = append(buildQueue, p)
 }
 
-func triggerDependentPackages(fullImportName string) {
+func triggerDependentPackages(fullImportName string, isFileChange bool) {
 	if finishedInitialPass && beVerbose() {
 		alog.Printf("@(dim:Triggering check of packages that import %s)\n", fullImportName)
 	}
 	for _, pkg := range packages {
 		if pkg.PossibleImports != nil && pkg.PossibleImports.Has(fullImportName) {
-			packageUpdates.In <- PackageUpdateTrigger{FullImportName: fullImportName, FileChange: false}
+			packageUpdates.In <- PackageUpdateTrigger{FullImportName: fullImportName, FileChange: isFileChange}
 		}
 	}
 }
