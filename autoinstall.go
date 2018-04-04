@@ -2,16 +2,17 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jessevdk/go-flags"
 	"github.com/tillberg/alog"
 	"github.com/tillberg/autoinstall/dedupingchan"
-	"github.com/tillberg/autorestart"
-	"github.com/tillberg/bismuth2"
 	"github.com/tillberg/stringset"
 	"github.com/tillberg/watcher"
 )
@@ -414,7 +415,8 @@ func processPathTriggers(notifyChan chan watcher.PathEvent) {
 }
 
 func main() {
-	sighup := autorestart.NotifyOnSighup()
+	sighup := make(chan os.Signal)
+	signal.Notify(sighup, syscall.SIGHUP)
 	_, err := flags.ParseArgs(&Opts, os.Args)
 	if err != nil {
 		err2, ok := err.(*flags.Error)
@@ -450,8 +452,10 @@ func main() {
 		Opts.LDFlags = Opts.LDFlags[1 : len(Opts.LDFlags)-1]
 	}
 
-	ctx := bismuth2.New()
-	ctx.Quote("go-version", "go", "version")
+	versionCmd := exec.Command("go", "version")
+	out, err := versionCmd.CombinedOutput()
+	alog.BailIf(err)
+	alog.Printf("@(dim:%s)\n", out)
 
 	listener := watcher.NewListener()
 	listener.Path = goPathSrcRoot
