@@ -29,6 +29,7 @@ var pkgCommentBytes = []byte("# ")
 var ldFailureBytes = []byte("collect2: error: ld returned ")
 var pkgConfigMissingBytes = []byte("Perhaps you should add the directory containing `")
 var bytesPeriod = []byte(".")
+var pkgConfigInvocationBytes = []byte("# pkg-config --cflags ")
 
 func buildPackages(packages []*Package) {
 	logger := alog.New(alog.DefaultLogger, alog.Colorify("@(dim:[go-install]) "), 0)
@@ -60,6 +61,21 @@ func buildPackages(packages []*Package) {
 
 	failedSet := stringset.New()
 
+	failPkgConfig := func(pkgConfigName string) {
+		var pName string
+		switch pkgConfigName {
+		case "sdl2":
+			pName = "github.com/veandco/go-sdl2/sdl"
+		default:
+			alog.Panicf("Couldn't find unknown pkg-config %q\n", pkgConfigName)
+		}
+		if failedSet.Add(pName) {
+			if beVerbose() {
+				logger.Printf("Couldn't find pkg-config %q for %q\n", pkgConfigName, pName)
+			}
+		}
+	}
+
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -68,7 +84,7 @@ func buildPackages(packages []*Package) {
 		s.Split(bufio.ScanLines)
 		for s.Scan() {
 			line := s.Bytes()
-			if true {
+			if beVerbose() {
 				logger.Write(ansiDimBytes)
 				logger.Write(line)
 				logger.Write(ansiResetBytes)
@@ -77,25 +93,33 @@ func buildPackages(packages []*Package) {
 			if bytes.HasPrefix(line, cantLoadPackageBytes) {
 				pName := string(bytes.SplitN(line[len(cantLoadPackageBytes):], colonBytes, 2)[0])
 				if failedSet.Add(pName) {
-					logger.Printf("Can't load %q\n", pName)
+					if beVerbose() {
+						logger.Printf("Can't load %q\n", pName)
+					}
 				}
 			} else if bytes.HasPrefix(line, srcPrefixBytes) {
 				srcName := string(bytes.SplitN(line[len(srcPrefixBytes):], colonBytes, 2)[0])
 				pName := filepath.Dir(srcName)
 				if failedSet.Add(pName) {
-					logger.Printf("Can't build %q\n", pName)
+					if beVerbose() {
+						logger.Printf("Can't build %q\n", pName)
+					}
 				}
 			} else if bytes.HasPrefix(line, goBuildBytes) {
 				// e.g. "go build github.com/tillberg/util/benchmarks: no non-test Go files in ..."
 				pName := string(bytes.SplitN(line[len(goBuildBytes):], colonBytes, 2)[0])
 				if failedSet.Add(pName) {
-					logger.Printf("Build failed on 'go build': %s\n", pName)
+					if beVerbose() {
+						logger.Printf("Build failed on 'go build': %s\n", pName)
+					}
 				}
 			} else if bytes.HasPrefix(line, goInstallBytes) {
 				// e.g. "go install gopkg.in/mcuadros/go-syslog.v2/example: build output "/path/to/go/bin/example" already exists and is not an object file"
 				pName := string(bytes.SplitN(line[len(goInstallBytes):], colonBytes, 2)[0])
 				if failedSet.Add(pName) {
-					logger.Printf("Build failed on 'go install': %s\n", pName)
+					if beVerbose() {
+						logger.Printf("Build failed on 'go install': %s\n", pName)
+					}
 				}
 			} else if bytes.HasPrefix(line, inFileIncludedFromBytes) || bytes.HasPrefix(line, recursiveFromBytes) {
 				// recursiveFromBytes is the same length as inFileIncludedFromBytes
@@ -104,28 +128,26 @@ func buildPackages(packages []*Package) {
 				srcName := string(bytes.SplitN(line[len(inFileIncludedFromBytes):], colonBytes, 2)[0])
 				pName := filepath.Dir(srcName)
 				if failedSet.Add(pName) {
-					logger.Printf("Can't build include for %q\n", pName)
+					if beVerbose() {
+						logger.Printf("Can't build include for %q\n", pName)
+					}
 				}
 			} else if bytes.HasPrefix(line, pkgCommentBytes) {
 				pName := string(line[len(pkgCommentBytes):])
 				if !strings.HasPrefix(pName, "pkg-config ") {
 					if failedSet.Add(pName) {
-						logger.Printf("Build failed for %q\n", pName)
+						if beVerbose() {
+							logger.Printf("Build failed for %q\n", pName)
+						}
 					}
+				} else if bytes.HasPrefix(line, pkgConfigInvocationBytes) {
+					pkgConfigName := string(line[len(pkgConfigInvocationBytes):])
+					failPkgConfig(pkgConfigName)
 				}
 			} else if bytes.HasPrefix(line, pkgConfigMissingBytes) {
 				// Kludge because go-install log doesn't give enough information to determine package name:
 				pkgConfigName := string(bytes.SplitN(line[len(pkgConfigMissingBytes):], bytesPeriod, 2)[0])
-				var pName string
-				switch pkgConfigName {
-				case "sdl2":
-					pName = "github.com/veandco/go-sdl2/sdl"
-				default:
-					alog.Panicf("Couldn't find unknown pkg-config %q\n", pkgConfigName)
-				}
-				if failedSet.Add(pName) {
-					logger.Printf("Couldn't find pkg-config %q for %q\n", pkgConfigName, pName)
-				}
+				failPkgConfig(pkgConfigName)
 			}
 		}
 		if err := s.Err(); err != nil {

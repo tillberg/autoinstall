@@ -7,4 +7,5 @@ type Package struct {
 	State           PackageState // Current state of this Package (idle/building/ready/etc)
 	ShouldBuild     bool
 	PossibleImports *stringset.StringSet // List of all possible imports (vendor-exploded)
+	FileChange      bool
 }

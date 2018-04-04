@@ -1,14 +1,15 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/jessevdk/go-flags"
 	"github.com/tillberg/alog"
+	"github.com/tillberg/autoinstall/dedupingchan"
 	"github.com/tillberg/autorestart"
 	"github.com/tillberg/bismuth2"
 	"github.com/tillberg/stringset"
@@ -16,9 +17,8 @@ import (
 )
 
 const (
-	enableSanityChecks         = false
-	DATE_FORMAT                = "2006-01-02T15:04:05.000000"
-	maxConcurrentPackageBuilds = 64
+	enableSanityChecks = false
+	DATE_FORMAT        = "2006-01-02T15:04:05.000000"
 )
 
 var Opts struct {
@@ -56,7 +56,6 @@ var moduleUpdateChan = make(chan *Package)
 var finishedInitialPass = false
 var numBuildSucesses = 0
 var numBuildFailures = 0
-var numReady = 0
 var numUnready = 0
 var numBuildsActive = 0
 var numPackageBuildsActive = 0
@@ -68,7 +67,7 @@ func numWorkersActive() int {
 	return numBuildsActive
 }
 
-var startupFormatStrBase = alog.Colorify("@(green:%d) @(dim:package%s built,) @(green:%d) @(dim:package%s up to date.)")
+var startupFormatStrBase = alog.Colorify("@(green:%d) @(dim:package%s built.)")
 var startupFormatStrChecking = alog.Colorify(" @(dim:Checking) @(green:%d)@(dim:...)")
 var startupFormatStrNotReady = alog.Colorify(" @(warn:%d) @(dim:package%s could not be built.)\n")
 
@@ -83,10 +82,10 @@ func updateStartupText(final bool) {
 	if !final {
 		format := startupFormatStrBase + startupFormatStrChecking
 		checkingTotal := len(buildQueue) + numPackageBuildsActive
-		startupLogger.Replacef(format, numBuildSucesses, pluralize(numBuildSucesses, "s"), numReady, pluralize(numReady, "s"), checkingTotal)
+		startupLogger.Replacef(format, numBuildSucesses, pluralize(numBuildSucesses, "s"), checkingTotal)
 	} else {
 		format := startupFormatStrBase + startupFormatStrNotReady
-		startupLogger.Replacef(format, numBuildSucesses, pluralize(numBuildSucesses, "s"), numReady, pluralize(numReady, "s"), numUnready, pluralize(numUnready, "s"))
+		startupLogger.Replacef(format, numBuildSucesses, pluralize(numBuildSucesses, "s"), numUnready, pluralize(numUnready, "s"))
 		startupLogger.Close()
 	}
 }
@@ -204,19 +203,21 @@ func dispatcher() {
 				p.ShouldBuild = pNew.ShouldBuild
 				p.PossibleImports = pNew.PossibleImports
 			}
-			switch p.State {
-			case PackageReady, PackageDirtyIdle:
-				if p.ShouldBuild {
-					queueBuild(p, "sources changed")
-				} else {
-					removeFromIndex(p.Name)
+			if pNew.FileChange {
+				switch p.State {
+				case PackageReady, PackageDirtyIdle:
+					if p.ShouldBuild {
+						queueBuild(p, "sources changed")
+					} else {
+						removeFromIndex(p.Name)
+					}
+				case PackageBuilding:
+					chState(p, PackageBuildingButDirty)
+				case PackageBuildingButDirty, PackageBuildQueued:
+					// Already have a build queued (or will), no need to change
+				default:
+					alog.Panicf("moduleUpdateChan encountered unexpected state %s", p.State)
 				}
-			case PackageBuilding:
-				chState(p, PackageBuildingButDirty)
-			case PackageBuildingButDirty, PackageBuildQueued:
-				// Already have a build queued (or will), no need to change
-			default:
-				alog.Panicf("moduleUpdateChan encountered unexpected state %s", p.State)
 			}
 		case <-timeout:
 			switch dispatchState {
@@ -253,8 +254,8 @@ func pushBuildWork() {
 		return
 	}
 	var numToBuild int
-	if len(buildQueue) > maxConcurrentPackageBuilds {
-		numToBuild = maxConcurrentPackageBuilds
+	if len(buildQueue) > runtime.GOMAXPROCS(0) {
+		numToBuild = runtime.GOMAXPROCS(0)
 	} else {
 		numToBuild = len(buildQueue)
 	}
@@ -276,12 +277,6 @@ func pushBuildWork() {
 }
 
 func chState(p *Package, state PackageState) {
-	if p.State == PackageReady {
-		numReady--
-	}
-	if state == PackageReady {
-		numReady++
-	}
 	if p.State == PackageDirtyIdle {
 		numUnready--
 	}
@@ -310,24 +305,12 @@ func queueBuild(p *Package, reason string) {
 }
 
 func triggerDependentPackages(fullImportName string) {
-	// Note: This is currently over-cautious, matching even packages that currently import a different, vendored/unvendored version of this package
 	if finishedInitialPass && beVerbose() {
 		alog.Printf("@(dim:Triggering check of packages that import %s)\n", fullImportName)
 	}
 	for _, pkg := range packages {
-		if pkg.PossibleImports.Has(fullImportName) {
-			switch pkg.State {
-			case PackageReady, PackageDirtyIdle:
-				queueBuild(pkg, fmt.Sprintf("triggered deps of %s", fullImportName))
-			case PackageBuildingButDirty:
-				// Package is already queued for update (or will be), so no need for change
-			case PackageBuilding:
-				chState(pkg, PackageBuildingButDirty)
-			case PackageBuildQueued:
-				// Package already queued for build, so no need to change
-			default:
-				alog.Panicf("triggerDependentPackages saw unexpected state %s", pkg.State)
-			}
+		if pkg.PossibleImports != nil && pkg.PossibleImports.Has(fullImportName) {
+			packageUpdates.In <- PackageUpdateTrigger{FullImportName: fullImportName, FileChange: false}
 		}
 	}
 }
@@ -365,10 +348,28 @@ func shouldRunTests() bool {
 
 var buildExtensions = stringset.New(".go", ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
 
-func processPackageTrigger(fullImportName string) {
+type PackageUpdateTrigger struct {
+	FullImportName string
+	FileChange     bool
+}
+
+var packageUpdates *dedupingchan.Chan = dedupingchan.New()
+
+func processPackageUpdates() {
+	for pkgName := range packageUpdates.Out {
+		processPackageTrigger(pkgName.(PackageUpdateTrigger))
+	}
+}
+
+func processPackageTrigger(trigger PackageUpdateTrigger) {
+	fullImportName := trigger.FullImportName
+	if beVerbose() {
+		alog.Printf("Updating package %s\n", fullImportName)
+	}
 	pkg := &Package{
 		Name:        fullImportName,
 		ShouldBuild: true,
+		FileChange:  trigger.FileChange,
 	}
 	for _, namePart := range strings.Split(fullImportName, "/") {
 		if namePart == "internal" || namePart == "vendor" {
@@ -390,35 +391,25 @@ func processPackageTrigger(fullImportName string) {
 			pkg.ShouldBuild = false
 		}
 	}
+	if !pkg.ShouldBuild && !pkg.FileChange {
+		return
+	}
 	moduleUpdateChan <- pkg
 }
 
 func processPathTriggers(notifyChan chan watcher.PathEvent) {
-	fullImportNames := stringset.New()
-	var timeout <-chan time.Time
-	for {
-		select {
-		case pathEvent := <-notifyChan:
-			if !buildExtensions.Has(filepath.Ext(pathEvent.Path)) {
-				continue
-			}
-			fullImportName, err := filepath.Rel(goPathSrcRoot, filepath.Dir(pathEvent.Path))
-			if err != nil {
-				alog.Bail(err)
-			}
-			if fullImportNames.Add(fullImportName) {
-				if Opts.Verbose && finishedInitialPass {
-					alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", fullImportName, pathEvent.Path)
-				}
-			}
-			timeout = time.After(100 * time.Millisecond)
-		case <-timeout:
-			for _, fullImportName := range fullImportNames.All() {
-				processPackageTrigger(fullImportName)
-			}
-			fullImportNames = stringset.New()
-			timeout = nil
+	for pathEvent := range notifyChan {
+		if !buildExtensions.Has(filepath.Ext(pathEvent.Path)) {
+			continue
 		}
+		fullImportName, err := filepath.Rel(goPathSrcRoot, filepath.Dir(pathEvent.Path))
+		if err != nil {
+			alog.Bail(err)
+		}
+		if Opts.Verbose && finishedInitialPass {
+			alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", fullImportName, pathEvent.Path)
+		}
+		packageUpdates.In <- PackageUpdateTrigger{FullImportName: fullImportName, FileChange: true}
 	}
 }
 
@@ -472,6 +463,9 @@ func main() {
 	listener.DebounceDuration = 200 * time.Millisecond
 	listener.Start()
 
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go processPackageUpdates()
+	}
 	go dispatcher()
 
 	go processPathTriggers(listener.NotifyChan)
