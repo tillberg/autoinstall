@@ -20,12 +20,12 @@ import (
 const (
 	enableSanityChecks = false
 	DATE_FORMAT        = "2006-01-02T15:04:05.000000"
+	maxBuilders        = 1 // kind of by design
 )
 
 var Opts struct {
 	Verbose        bool   `short:"v" long:"verbose" description:"Show verbose debug information"`
 	NoColor        bool   `long:"no-color" description:"Disable ANSI colors"`
-	MaxWorkers     int    `long:"max-workers" description:"Max number of build workers"`
 	RunTests       bool   `long:"run-tests" description:"Run tests after building packages (after initial pass)"`
 	Tags           string `long:"tags" description:"-tags parameter to pass to go-build"`
 	TestArgShort   bool   `long:"test-arg-short" description:"Pass the -short flag to go test"`
@@ -102,7 +102,7 @@ const (
 
 func getDispatchState() DispatchState {
 	if len(buildQueue) > 0 {
-		if numWorkersActive() < Opts.MaxWorkers {
+		if numWorkersActive() < maxBuilders {
 			return DispatchCanTriggerBuild
 		}
 	} else if !finishedInitialPass && numWorkersActive() == 0 {
@@ -251,7 +251,7 @@ func removeFromIndex(pName string) {
 }
 
 func pushBuildWork() {
-	if numWorkersActive() >= Opts.MaxWorkers {
+	if numWorkersActive() >= maxBuilders {
 		return
 	}
 	var numToBuild int
@@ -311,7 +311,10 @@ func triggerDependentPackages(fullImportName string, isFileChange bool) {
 	}
 	for _, pkg := range packages {
 		if pkg.PossibleImports != nil && pkg.PossibleImports.Has(fullImportName) {
-			packageUpdates.In <- PackageUpdateTrigger{FullImportName: fullImportName, FileChange: isFileChange}
+			if finishedInitialPass && beVerbose() {
+				alog.Printf("@(dim:Triggering check of %s)\n", pkg.Name)
+			}
+			packageUpdates.In <- PackageUpdateTrigger{FullImportName: pkg.Name, FileChange: isFileChange}
 		}
 	}
 }
@@ -437,14 +440,11 @@ func main() {
 		alog.AddAnsiColorCode("time", alog.ColorBlue)
 	}
 	alog.Printf("@(dim:autoinstall started.)\n")
-	if Opts.MaxWorkers == 0 {
-		Opts.MaxWorkers = 1
-	}
 	pluralProcess := ""
-	if Opts.MaxWorkers != 1 {
+	if runtime.GOMAXPROCS(0) != 1 {
 		pluralProcess = "es"
 	}
-	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)@(dim: using up to )@(dim,cyan:%d)@(dim: process%s.)\n", goPath, Opts.MaxWorkers, pluralProcess)
+	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)@(dim: using up to )@(dim,cyan:%d)@(dim: process%s.)\n", goPath, runtime.GOMAXPROCS(0), pluralProcess)
 	if !Opts.Verbose {
 		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
