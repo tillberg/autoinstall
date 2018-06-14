@@ -25,6 +25,7 @@ const (
 
 var Opts struct {
 	Verbose        bool   `short:"v" long:"verbose" description:"Show verbose debug information"`
+	VeryVerbose    bool   `long:"very-verbose" description:"Show verbose debug information"`
 	NoColor        bool   `long:"no-color" description:"Disable ANSI colors"`
 	RunTests       bool   `long:"run-tests" description:"Run tests after building packages (after initial pass)"`
 	Tags           string `long:"tags" description:"-tags parameter to pass to go-build"`
@@ -254,9 +255,10 @@ func pushBuildWork() {
 	if numWorkersActive() >= maxBuilders {
 		return
 	}
+	maxPackages := 1 // was runtime.GOMAXPROCS(0)
 	var numToBuild int
-	if len(buildQueue) > runtime.GOMAXPROCS(0) {
-		numToBuild = runtime.GOMAXPROCS(0)
+	if len(buildQueue) > maxPackages {
+		numToBuild = maxPackages
 	} else {
 		numToBuild = len(buildQueue)
 	}
@@ -298,7 +300,7 @@ func queueBuild(p *Package, reason string) {
 			}
 		}
 	}
-	if Opts.Verbose && beVerbose() {
+	if beVeryVerbose() {
 		alog.Printf("@(dim:Queued build for %s: %s)\n", p.Name, reason)
 	}
 	chState(p, PackageBuildQueued)
@@ -343,14 +345,18 @@ func printStartupSummary() {
 }
 
 func beVerbose() bool {
-	return finishedInitialPass || Opts.Verbose
+	return finishedInitialPass || Opts.Verbose || Opts.VeryVerbose
+}
+
+func beVeryVerbose() bool {
+	return (finishedInitialPass && Opts.Verbose) || Opts.VeryVerbose
 }
 
 func shouldRunTests() bool {
 	return finishedInitialPass && Opts.RunTests
 }
 
-var buildExtensions = stringset.New(".go", ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
+var buildExtensions = stringset.New(".go") //, ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
 
 type PackageUpdateTrigger struct {
 	FullImportName string
@@ -410,7 +416,7 @@ func processPathTriggers(notifyChan chan watcher.PathEvent) {
 		if err != nil {
 			alog.Bail(err)
 		}
-		if Opts.Verbose && finishedInitialPass {
+		if beVeryVerbose() {
 			alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", fullImportName, pathEvent.Path)
 		}
 		packageUpdates.In <- PackageUpdateTrigger{FullImportName: fullImportName, FileChange: true}
@@ -445,7 +451,7 @@ func main() {
 		pluralProcess = "es"
 	}
 	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)@(dim: using up to )@(dim,cyan:%d)@(dim: process%s.)\n", goPath, runtime.GOMAXPROCS(0), pluralProcess)
-	if !Opts.Verbose {
+	if !beVerbose() {
 		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
 	if len(Opts.LDFlags) >= 2 && strings.HasPrefix(Opts.LDFlags, "'") && strings.HasSuffix(Opts.LDFlags, "'") {

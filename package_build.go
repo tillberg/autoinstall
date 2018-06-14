@@ -63,11 +63,15 @@ func buildPackages(packages []*Package) {
 
 	failPkgConfig := func(pkgConfigName string) {
 		var pName string
-		switch pkgConfigName {
-		case "sdl2":
-			pName = "github.com/veandco/go-sdl2/sdl"
-		default:
-			alog.Panicf("Couldn't find unknown pkg-config %q\n", pkgConfigName)
+		if len(packages) == 1 {
+			pName = packages[0].Name
+		} else {
+			switch pkgConfigName {
+			case "sdl2":
+				pName = "github.com/veandco/go-sdl2/sdl"
+			default:
+				alog.Panicf("Couldn't find unknown pkg-config %q\n", pkgConfigName)
+			}
 		}
 		if failedSet.Add(pName) {
 			if beVerbose() {
@@ -206,10 +210,10 @@ func buildPackages(packages []*Package) {
 		failedSet.Remove(name)
 	}
 	if failedSet.Len() != 0 {
-		logger.Panicf("Got unexpected/dependency package build failures: %v\n", failedSet.All())
+		logger.Printf("Got unexpected/dependency package build failures: %v\n", failedSet.All())
 	}
 	if waitErr != nil && numFail == 0 {
-		logger.Panicf("go-install failed, but no matching package failures were captured\n")
+		logger.Printf("go-install failed, but no matching package failures were captured\n")
 	}
 
 	logger.Printf("@(green:%d) success, @(dim:%d) retry, @(warn:%d) fail\n", numSuccess, numRetry, numFail)
