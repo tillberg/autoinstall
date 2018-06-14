@@ -173,6 +173,14 @@ func buildPackages(packages []*Package) {
 	}
 	logger.Printf("go-install finished in %s\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second))
 
+	// kludge fix for weird build errors:
+	if len(packages) == 1 {
+		failedSet = stringset.New()
+		if waitErr != nil {
+			failedSet.Add(packages[0].Name)
+		}
+	}
+
 	var numSuccess int
 	var numRetry int
 	var numFail int
