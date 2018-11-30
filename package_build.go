@@ -171,7 +171,20 @@ func buildPackages(packages []*Package) {
 			logger.Printf("go-install command failed: %v\n", waitErr)
 		}
 	}
-	logger.Printf("go-install finished in %s\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second))
+	var pkgNames strings.Builder
+	for i, pkg := range packages {
+		if i != 0 {
+			pkgNames.WriteString(" ")
+		}
+		pkgNames.WriteString(pkg.Name)
+	}
+	var color string
+	if len(packages) == 1 && waitErr == nil {
+		color = "blue"
+	} else {
+		color = "dim"
+	}
+	logger.Printf("go-install finished in %s: @("+color+":%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkgNames.String())
 
 	// kludge fix for weird build errors:
 	if len(packages) == 1 {
