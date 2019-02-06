@@ -82,6 +82,9 @@ func pluralize(num int, s string) string {
 
 func updateStartupText(final bool) {
 	if !final {
+		if !Opts.VeryVerbose {
+			return
+		}
 		format := startupFormatStrBase + startupFormatStrChecking
 		checkingTotal := len(buildQueue) + numPackageBuildsActive
 		startupLogger.Replacef(format, numBuildSucesses, pluralize(numBuildSucesses, "s"), checkingTotal)
