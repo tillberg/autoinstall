@@ -13,8 +13,8 @@ import (
 	"github.com/jessevdk/go-flags"
 	"github.com/tillberg/alog"
 	"github.com/tillberg/autoinstall/dedupingchan"
+	"github.com/tillberg/notifywrap"
 	"github.com/tillberg/stringset"
-	"github.com/tillberg/watcher"
 )
 
 const (
@@ -49,7 +49,11 @@ type BuildResult struct {
 	Retry   bool
 }
 
-var goPathSrcRoot = filepath.Join(goPath, "src")
+var goPathSrcRoot = (func() string {
+	p, err := filepath.EvalSymlinks(filepath.Join(goPath, "src"))
+	alog.BailIf(err)
+	return p
+})()
 
 var packages = map[string]*Package{}
 var buildQueue []*Package
@@ -410,7 +414,7 @@ func processPackageTrigger(trigger PackageUpdateTrigger) {
 	moduleUpdateChan <- pkg
 }
 
-func processPathTriggers(notifyChan chan watcher.PathEvent) {
+func processPathTriggers(notifyChan <-chan *notifywrap.EventInfo) {
 	for pathEvent := range notifyChan {
 		if !buildExtensions.Has(filepath.Ext(pathEvent.Path)) {
 			continue
@@ -453,7 +457,7 @@ func main() {
 	if runtime.GOMAXPROCS(0) != 1 {
 		pluralProcess = "es"
 	}
-	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)@(dim: using up to )@(dim,cyan:%d)@(dim: process%s.)\n", goPath, runtime.GOMAXPROCS(0), pluralProcess)
+	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)\n", goPath, runtime.GOMAXPROCS(0), pluralProcess)
 	if !beVerbose() {
 		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
@@ -466,22 +470,21 @@ func main() {
 	alog.BailIf(err)
 	alog.Printf("@(dim:%s)\n", out)
 
-	listener := watcher.NewListener()
-	listener.Path = goPathSrcRoot
-	// "_workspace" is a kludge to avoid recursing into Godeps workspaces
-	// "node_modules" is a kludge to avoid walking into typically-huge node_modules trees
-	listener.IgnorePart = stringset.New(".git", ".hg", "node_modules", "_workspace", "etld")
-	listener.IgnoreSubstring = []string{"/.gometalinter"}
-	listener.NotifyOnStartup = true
-	listener.DebounceDuration = 200 * time.Millisecond
-	listener.Start()
+	watcherOpts := notifywrap.Opts{
+		DebounceDuration:           200 * time.Millisecond,
+		CoalesceEventTypes:         true,
+		NotifyDirectoriesOnStartup: true,
+		NotifyFilesOnStartup:       true,
+	}
+	pathEvents, err := notifywrap.WatchRecursive(goPathSrcRoot, watcherOpts)
+	alog.BailIf(err)
 
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go processPackageUpdates()
 	}
 	go dispatcher()
 
-	go processPathTriggers(listener.NotifyChan)
+	go processPathTriggers(pathEvents)
 
 	<-sighup
 	startupLogger.Close()
