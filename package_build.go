@@ -209,10 +209,12 @@ func buildPackages(packages []*Package) {
 				failed = true
 				understoodFailedSet.Add(pkg.Name)
 			}
-			failedDeps := pkg.PossibleImports.Intersection(failedSet)
-			for _, fullImportName := range failedDeps.All() {
-				failed = true
-				understoodFailedSet.Add(fullImportName)
+			if pkg.PossibleImports != nil {
+				failedDeps := pkg.PossibleImports.Intersection(failedSet)
+				for _, fullImportName := range failedDeps.All() {
+					failed = true
+					understoodFailedSet.Add(fullImportName)
+				}
 			}
 		}
 
