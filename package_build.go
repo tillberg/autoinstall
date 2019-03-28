@@ -88,12 +88,10 @@ func buildPackages(packages []*Package) {
 		s.Split(bufio.ScanLines)
 		for s.Scan() {
 			line := s.Bytes()
-			if beVerbose() {
-				logger.Write(ansiDimBytes)
-				logger.Write(line)
-				logger.Write(ansiResetBytes)
-				logger.Write(newlineBytes)
-			}
+			logger.Write(ansiDimBytes)
+			logger.Write(line)
+			logger.Write(ansiResetBytes)
+			logger.Write(newlineBytes)
 			if bytes.HasPrefix(line, cantLoadPackageBytes) {
 				pName := string(bytes.SplitN(line[len(cantLoadPackageBytes):], colonBytes, 2)[0])
 				if failedSet.Add(pName) {
