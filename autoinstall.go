@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go/build"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -38,7 +39,7 @@ var Opts struct {
 var goPath = (func() string {
 	p := os.Getenv("GOPATH")
 	if p == "" {
-		panic("GOPATH must be set")
+		p = build.Default.GOPATH
 	}
 	return p
 })()
@@ -440,11 +441,6 @@ func main() {
 			return
 		}
 		alog.Printf("Error parsing command-line options: %s\n", err)
-		return
-	}
-	if goPath == "" {
-		alog.Printf("GOPATH is not set in the environment. Please set GOPATH first, then retry.\n")
-		alog.Printf("For help setting GOPATH, see https://golang.org/doc/code.html\n")
 		return
 	}
 	if Opts.NoColor {
