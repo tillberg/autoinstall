@@ -18,7 +18,7 @@ func initStandardPackages() {
 	cmd.Dir = goPath
 	buf, err := cmd.CombinedOutput()
 	alog.BailIf(err)
-	for _, line := range bytes.Split(buf, newlineBytes) {
+	for _, line := range bytes.Split(buf, []byte("\n")) {
 		if len(line) == 0 {
 			continue
 		}

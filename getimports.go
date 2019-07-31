@@ -6,10 +6,14 @@ import (
 	"github.com/tillberg/stringset"
 )
 
-func getPackageImportsRecurse(pName string, all *stringset.StringSet) (isCommand bool) {
+func getPackageImportsRecurse(pName string, all *stringset.StringSet, isRoot bool) (isCommand bool) {
+	// var buildContext build.Context = build.Default
 	bPkg, err := build.Default.Import(pName, goPath, 0)
 	// Ignore import errors; they should show as higher-level build failures
 	if err != nil {
+		return false
+	}
+	if isRoot && !bPkg.IsCommand() {
 		return false
 	}
 	for _, importName := range bPkg.Imports {
@@ -17,14 +21,14 @@ func getPackageImportsRecurse(pName string, all *stringset.StringSet) (isCommand
 			continue
 		}
 		if all.Add(importName) {
-			getPackageImportsRecurse(importName, all)
+			getPackageImportsRecurse(importName, all, false)
 		}
 	}
-	return bPkg.IsCommand()
+	return true
 }
 
 func getPackageImports(pName string) (deps *stringset.StringSet, isCommand bool) {
 	all := stringset.New()
-	isCommand = getPackageImportsRecurse(pName, all)
+	isCommand = getPackageImportsRecurse(pName, all, true)
 	return all, isCommand
 }
