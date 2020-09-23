@@ -468,7 +468,7 @@ func main() {
 		NotifyFilesOnStartup:       true,
 	}
 	pathEvents := make(chan *notifywrap.EventInfo, 100)
-	err = notifywrap.WatchRecursive(goPathSrcRoot, pathEvents, watcherOpts)
+	err = notifywrap.Watch(goPathSrcRoot, pathEvents, watcherOpts)
 	alog.BailIf(err)
 
 	for i := 0; i < runtime.NumCPU(); i++ {
