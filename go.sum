@@ -1,0 +1,14 @@
+github.com/jessevdk/go-flags v1.4.0 h1:4IU2WS7AumrZ/40jfhf4QVDMsQwqA7VEHozFRrGARJA=
+github.com/jessevdk/go-flags v1.4.0/go.mod h1:4FA24M0QyGHXBuZZK/XkWh8h0e1EYbRYJSGM75WSRxI=
+github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
+github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
+github.com/rjeczalik/notify v0.9.2 h1:MiTWrPj55mNDHEiIX5YUSKefw/+lCQVoAFmD6oQm5w8=
+github.com/rjeczalik/notify v0.9.2/go.mod h1:aErll2f0sUX9PXZnVNyeiObbmTlk5jnMoCa4QEjJeqM=
+github.com/tillberg/alog v0.0.0-20190226171824-c149a069c2bf h1:YcARIb58cArX87k39XDIDA2pUdfIxFC0Kw4pVSZ+xzk=
+github.com/tillberg/alog v0.0.0-20190226171824-c149a069c2bf/go.mod h1:1s6nkUte+oDPoBb+iEo94PyXZERmDNMK5XBUj20ANBU=
+github.com/tillberg/notifywrap v0.0.0-20200923124435-9c3118e691e8 h1:m7doSbKo6ZKxlVuKsBl5jBldJOY4ukbu6bqnDLnDaOg=
+github.com/tillberg/notifywrap v0.0.0-20200923124435-9c3118e691e8/go.mod h1:tkTGK/6085+GRxmsXqp9VJRWv7ZKxnAq2mE11xfVR4Q=
+github.com/tillberg/stringset v0.0.0-20170913192538-82c0c7cea2c5 h1:5NKer8vakgGdcj6vy2BVFW153TB/8l4tFsXN7zuWBfI=
+github.com/tillberg/stringset v0.0.0-20170913192538-82c0c7cea2c5/go.mod h1:fYcF9dZnzutLCGBoA9x0Umi4kqTf5PsSXTW+M4P0qaE=
+golang.org/x/sys v0.0.0-20180926160741-c2ed4eda69e7 h1:bit1t3mgdR35yN0cX0G8orgLtOuyL9Wqxa1mccLB0ig=
+golang.org/x/sys v0.0.0-20180926160741-c2ed4eda69e7/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
