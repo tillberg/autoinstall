@@ -17,7 +17,7 @@ var funcmainslice = []byte("func main() {")
 func packageIsProgram(pkg *Package) bool {
 	// detectTimer := alog.NewTimer()
 	// defer func() {
-	// 	alog.Printf("@(dim:[)%s@(dim:]) packageIsProgram? %s)\n", detectTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Name)
+	// 	alog.Printf("@(dim:[)%s@(dim:]) packageIsProgram? %s)\n", detectTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
 	// }()
 	packagePath := filepath.Join(goPathSrcRoot, pkg.Name)
 	infos, err := ioutil.ReadDir(packagePath)
@@ -63,21 +63,24 @@ func buildProgramPackage(pkg *Package) {
 	buildTimer := alog.NewTimer()
 	logger := alog.New(alog.DefaultLogger, alog.Colorify("@(dim:[install]) "), 0)
 	cmd := exec.Command("go", "install", "-v")
-	cmd.Dir = goPath
+	cmd.Dir = filepath.Join(goPath, "src", pkg.Name)
 	if Opts.LDFlags != "" {
 		cmd.Args = append(cmd.Args, "-ldflags")
 		cmd.Args = append(cmd.Args, Opts.LDFlags)
 	}
-	cmd.Args = append(cmd.Args, "--")
-	cmd.Args = append(cmd.Args, pkg.Name)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
+	cmd.Env = os.Environ()
+	if !pkg.OSArch.IsLocal() {
+		cmd.Env = append(cmd.Env, "GOOS="+pkg.OSArch.OS)
+		cmd.Env = append(cmd.Env, "GOARCH="+pkg.OSArch.Arch)
+	}
 	err := cmd.Run()
 	success := err == nil
 	if success {
-		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:program) @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Name)
+		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:program) @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
 	} else {
-		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail program %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Name)
+		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail program %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
 	}
 	buildDone <- BuildResult{
 		Package: pkg,
@@ -89,21 +92,24 @@ func buildPluginPackage(pkg *Package) {
 	buildTimer := alog.NewTimer()
 	logger := alog.New(alog.DefaultLogger, alog.Colorify("@(dim:[install]) "), 0)
 	cmd := exec.Command("go", "install", "-buildmode=plugin")
-	cmd.Dir = goPath
+	cmd.Dir = filepath.Join(goPath, "src", pkg.Name)
 	if Opts.LDFlags != "" {
 		cmd.Args = append(cmd.Args, "-ldflags")
 		cmd.Args = append(cmd.Args, Opts.LDFlags)
 	}
-	cmd.Args = append(cmd.Args, "--")
-	cmd.Args = append(cmd.Args, pkg.Name)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
+	cmd.Env = os.Environ()
+	if !pkg.OSArch.IsLocal() {
+		cmd.Env = append(cmd.Env, "GOOS="+pkg.OSArch.OS)
+		cmd.Env = append(cmd.Env, "GOARCH="+pkg.OSArch.Arch)
+	}
 	err := cmd.Run()
 	success := err == nil
 	if success {
-		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:plugin)  @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Name)
+		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:plugin)  @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
 	} else {
-		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail plugin  %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Name)
+		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail plugin  %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
 	}
 	buildDone <- BuildResult{
 		Package: pkg,

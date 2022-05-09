@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"go/build"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -172,11 +175,11 @@ func dispatcher() {
 				}
 			}
 			if !p.ShouldBuild {
-				removeFromIndex(p.Name)
+				removeFromIndex(p.Key())
 			}
 		case pNew := <-moduleUpdateChan:
 			lastModuleUpdateTime = time.Now()
-			p := packages[pNew.Name]
+			p := packages[pNew.Key()]
 			if p == nil {
 				if !pNew.ShouldBuild {
 					// Don't add non-command packages to the index. Just trigger dependencies.
@@ -185,7 +188,7 @@ func dispatcher() {
 				}
 				p = pNew
 				p.State = PackageDirtyIdle
-				packages[pNew.Name] = p
+				packages[pNew.Key()] = p
 				numUnready++
 			} else {
 				p.ShouldBuild = pNew.ShouldBuild
@@ -197,7 +200,7 @@ func dispatcher() {
 					if p.ShouldBuild {
 						queueBuild(p, "sources changed")
 					} else {
-						removeFromIndex(p.Name)
+						removeFromIndex(p.Key())
 					}
 				case PackageBuilding:
 					chState(p, PackageBuildingButDirty)
@@ -219,7 +222,7 @@ func dispatcher() {
 				for _, p := range packages {
 					switch p.State {
 					case PackageBuilding, PackageBuildingButDirty:
-						alog.Printf("@(dim:Still building %s...)\n", p.Name)
+						alog.Printf("@(dim:Still building %s...)\n", p.Key())
 					}
 				}
 			default:
@@ -229,12 +232,12 @@ func dispatcher() {
 	}
 }
 
-func removeFromIndex(pName string) {
-	alog.Printf("@(dim:Removing package %s from index.)\n", pName)
-	delete(packages, pName)
+func removeFromIndex(pKey string) {
+	alog.Printf("@(dim:Removing package %s from index.)\n", pKey)
+	delete(packages, pKey)
 	// Trigger updates of any packages that depend on this import name
 	// XXX this should be modified if triggerDependentPackages is made more specific in the future
-	triggerDependentPackages(pName, true)
+	triggerDependentPackages(pKey, true)
 }
 
 func pushBuildWork() {
@@ -272,12 +275,12 @@ func queueBuild(p *Package, reason string) {
 	if enableSanityChecks {
 		for _, pkg := range buildQueue {
 			if pkg == p {
-				alog.Panicf("Package %s already in buildQueue, cannot queue twice", p.Name)
+				alog.Panicf("Package %s already in buildQueue, cannot queue twice", p.Key())
 			}
 		}
 	}
 	if beVeryVerbose() {
-		alog.Printf("@(dim:Queued build for %s: %s)\n", p.Name, reason)
+		alog.Printf("@(dim:Queued build for %s: %s)\n", p.Key(), reason)
 	}
 	chState(p, PackageBuildQueued)
 	buildQueue = append(buildQueue, p)
@@ -290,7 +293,7 @@ func triggerDependentPackages(fullImportName string, isFileChange bool) {
 	for _, pkg := range packages {
 		if pkg.PossibleImports != nil && pkg.PossibleImports.Has(fullImportName) {
 			if finishedInitialPass && beVerbose() {
-				alog.Printf("@(dim:Triggering check of %s)\n", pkg.Name)
+				alog.Printf("@(dim:Triggering check of %s)\n", pkg.Key())
 			}
 			packageUpdates.In <- PackageUpdateTrigger{FullImportName: pkg.Name, FileChange: isFileChange}
 		}
@@ -317,10 +320,6 @@ func possibleFullImportNames(pkgName string, importName string) []string {
 
 func printStartupSummary() {
 	alog.Printf("@(dim:Finished initial pass of all packages.)\n")
-	nameSet := stringset.New()
-	for _, pkg := range packages {
-		nameSet.Add(pkg.Name)
-	}
 	alog.Printf("@(green:%d) @(dim:package%s built.) @(warn:%d) @(dim:package%s could not be built.)\n",
 		numBuildSucesses, pluralize(numBuildSucesses, "s"),
 		numUnready, pluralize(numUnready, "s"),
@@ -339,7 +338,12 @@ func shouldRunTests() bool {
 	return finishedInitialPass && Opts.RunTests
 }
 
-var buildExtensions = stringset.New(".go") //, ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
+var (
+	autoinstallTargetsFilename = "autoinstall.targets"
+
+	buildExtensions = stringset.New(".go") //, ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
+	buildFileNames  = stringset.New(autoinstallTargetsFilename)
+)
 
 type PackageUpdateTrigger struct {
 	FullImportName string
@@ -349,16 +353,35 @@ type PackageUpdateTrigger struct {
 var packageUpdates *dedupingchan.Chan = dedupingchan.New()
 
 func processPackageUpdates() {
-	for pkgName := range packageUpdates.Out {
-		processPackageTrigger(pkgName.(PackageUpdateTrigger))
+	for pkgUpdateTrigger := range packageUpdates.Out {
+		processPackageTrigger(pkgUpdateTrigger.(PackageUpdateTrigger))
 	}
 }
 
 func processPackageTrigger(trigger PackageUpdateTrigger) {
+	targetsFile := filepath.Join(goPathSrcRoot, trigger.FullImportName, autoinstallTargetsFilename)
+	contents, err := ioutil.ReadFile(targetsFile)
+	if err != nil {
+		processPackageTriggerOSArch(trigger, OSArch{})
+		return
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(contents))
+	for scanner.Scan() {
+		trimmed := strings.TrimSpace(scanner.Text())
+		if trimmed == "" {
+			continue
+		}
+		os, arch, _ := strings.Cut(trimmed, "_")
+		processPackageTriggerOSArch(trigger, OSArch{OS: os, Arch: arch})
+	}
+}
+
+func processPackageTriggerOSArch(trigger PackageUpdateTrigger, osArch OSArch) {
 	t := alog.NewTimer()
 	fullImportName := trigger.FullImportName
 	pkg := &Package{
 		Name:        fullImportName,
+		OSArch:      osArch,
 		ShouldBuild: true,
 		FileChange:  trigger.FileChange,
 	}
@@ -387,7 +410,7 @@ func processPackageTrigger(trigger PackageUpdateTrigger) {
 		pkg.ShouldBuild = anyMatch
 	}
 	if pkg.ShouldBuild {
-		deps, isCommand := getPackageImports(fullImportName)
+		deps, isCommand := getPackageImports(fullImportName, osArch)
 		if isCommand {
 			allPossible := stringset.New()
 			for _, importName := range deps.All() {
@@ -399,10 +422,12 @@ func processPackageTrigger(trigger PackageUpdateTrigger) {
 		} else {
 			pkg.ShouldBuild = false
 		}
+	} else if beVeryVerbose() {
+		alog.Printf("@(dim:Skipping package %s due to prefix filters.)\n", fullImportName)
 	}
 	if beVeryVerbose() && t.Elapsed() > 10*time.Millisecond {
 		durStr := t.FormatElapsedColor(100*time.Millisecond, 200*time.Millisecond)
-		alog.Printf("@(dim:[)%s@(dim:]) Updated package %s\n", durStr, fullImportName)
+		alog.Printf("@(dim:[)%s@(dim:]) Updated package %s\n", durStr, pkg.Key())
 	}
 	if !pkg.ShouldBuild && !pkg.FileChange {
 		return
@@ -412,7 +437,7 @@ func processPackageTrigger(trigger PackageUpdateTrigger) {
 
 func processPathTriggers(notifyChan <-chan *notifywrap.EventInfo) {
 	for pathEvent := range notifyChan {
-		if !buildExtensions.Has(filepath.Ext(pathEvent.Path)) {
+		if !buildExtensions.Has(filepath.Ext(pathEvent.Path)) && !buildFileNames.Has(filepath.Base(pathEvent.Path)) {
 			continue
 		}
 		fullImportName, err := filepath.Rel(goPathSrcRoot, filepath.Dir(pathEvent.Path))
@@ -444,11 +469,7 @@ func main() {
 		alog.AddAnsiColorCode("time", alog.ColorBlue)
 	}
 	alog.Printf("@(dim:autoinstall started.)\n")
-	pluralProcess := ""
-	if runtime.GOMAXPROCS(0) != 1 {
-		pluralProcess = "es"
-	}
-	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)\n", goPath, runtime.GOMAXPROCS(0), pluralProcess)
+	alog.Printf("@(dim:Building all packages in) @(dim,cyan:%s)\n", goPath)
 	if !beVerbose() {
 		alog.Printf("@(dim:Use) --verbose @(dim:to show all messages during startup.)\n")
 	}
@@ -460,6 +481,12 @@ func main() {
 	out, err := versionCmd.CombinedOutput()
 	alog.BailIf(err)
 	alog.Printf("@(dim:%s)\n", out)
+	if beVeryVerbose() {
+		envCmd := exec.Command("go", "env")
+		out, err := envCmd.CombinedOutput()
+		alog.BailIf(err)
+		alog.Printf("@(dim:%s)\n", out)
+	}
 
 	watcherOpts := notifywrap.Opts{
 		DebounceDuration:           200 * time.Millisecond,
