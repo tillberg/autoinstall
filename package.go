@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/tillberg/alog"
 	"github.com/tillberg/stringset"
 )
 
@@ -37,4 +38,14 @@ func (o OSArch) String() string {
 		return "local"
 	}
 	return fmt.Sprintf("%s_%s", o.OS, o.Arch)
+}
+
+func (o OSArch) ZigArchStr() string {
+	switch o.Arch {
+	case "amd64":
+		return "x86_64"
+	default:
+		alog.Panicf("Unknown arch %s", o.Arch)
+	}
+	panic("unreachable")
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -64,17 +65,10 @@ func buildProgramPackage(pkg *Package) {
 	logger := alog.New(alog.DefaultLogger, alog.Colorify("@(dim:[install]) "), 0)
 	cmd := exec.Command("go", "install", "-v")
 	cmd.Dir = filepath.Join(goPath, "src", pkg.Name)
-	if Opts.LDFlags != "" {
-		cmd.Args = append(cmd.Args, "-ldflags")
-		cmd.Args = append(cmd.Args, Opts.LDFlags)
-	}
+	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	cmd.Env = os.Environ()
-	if !pkg.OSArch.IsLocal() {
-		cmd.Env = append(cmd.Env, "GOOS="+pkg.OSArch.OS)
-		cmd.Env = append(cmd.Env, "GOARCH="+pkg.OSArch.Arch)
-	}
+	cmd.Env = getBuildEnv(pkg)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -91,19 +85,12 @@ func buildProgramPackage(pkg *Package) {
 func buildPluginPackage(pkg *Package) {
 	buildTimer := alog.NewTimer()
 	logger := alog.New(alog.DefaultLogger, alog.Colorify("@(dim:[install]) "), 0)
-	cmd := exec.Command("go", "install", "-buildmode=plugin")
+	cmd := exec.Command("go", "install", "-v", "-buildmode=plugin")
 	cmd.Dir = filepath.Join(goPath, "src", pkg.Name)
-	if Opts.LDFlags != "" {
-		cmd.Args = append(cmd.Args, "-ldflags")
-		cmd.Args = append(cmd.Args, Opts.LDFlags)
-	}
+	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	cmd.Env = os.Environ()
-	if !pkg.OSArch.IsLocal() {
-		cmd.Env = append(cmd.Env, "GOOS="+pkg.OSArch.OS)
-		cmd.Env = append(cmd.Env, "GOARCH="+pkg.OSArch.Arch)
-	}
+	cmd.Env = getBuildEnv(pkg)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -115,4 +102,27 @@ func buildPluginPackage(pkg *Package) {
 		Package: pkg,
 		Success: success,
 	}
+}
+
+func getBuildEnv(pkg *Package) []string {
+	env := os.Environ()
+	if !pkg.OSArch.IsLocal() {
+		env = append(env, "GOOS="+pkg.OSArch.OS)
+		env = append(env, "GOARCH="+pkg.OSArch.Arch)
+		if Opts.ZigCC {
+			target := fmt.Sprintf("%s-%s", pkg.OSArch.ZigArchStr(), pkg.OSArch.OS)
+			env = append(env, "CC=zig cc -target "+target)
+			env = append(env, "CXX=zig c++ -target "+target)
+		}
+	}
+	return env
+}
+
+func getExtraBuildArgs() []string {
+	var args []string
+	if Opts.LDFlags != "" {
+		args = append(args, "-ldflags")
+		args = append(args, Opts.LDFlags)
+	}
+	return args
 }

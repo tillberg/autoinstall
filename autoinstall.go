@@ -39,6 +39,7 @@ var Opts struct {
 	TestArgTimeout string   `long:"test-arg-timeout" description:"Pass the -timeout flag to go test with this value"`
 	LDFlags        string   `long:"ldflags" description:"Pass the -ldflags to go install with this value"`
 	BuildPlugins   bool     `long:"build-plugins" description:"Build plugins too"`
+	ZigCC          bool     `long:"zigcc" description:"Use zig toolchain for cross-compiling CGO"`
 }
 
 var goPath = (func() string {
