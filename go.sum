@@ -1,7 +1,5 @@
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/jessevdk/go-flags v1.4.0 h1:4IU2WS7AumrZ/40jfhf4QVDMsQwqA7VEHozFRrGARJA=
-github.com/jessevdk/go-flags v1.4.0/go.mod h1:4FA24M0QyGHXBuZZK/XkWh8h0e1EYbRYJSGM75WSRxI=
 github.com/jessevdk/go-flags v1.5.0 h1:1jKYvbxEjfUl0fmqTCOfonvskHHXMjBySTLW4y9LFvc=
 github.com/jessevdk/go-flags v1.5.0/go.mod h1:Fw0T6WPc1dYxT4mKEZRfG5kJhaTDP9pj1c2EWnYs/m4=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
@@ -17,16 +15,12 @@ github.com/tillberg/alog v0.0.0-20220512194237-a3dcc96a2d8a h1:HsAZ3DNiO+LybrK6f
 github.com/tillberg/alog v0.0.0-20220512194237-a3dcc96a2d8a/go.mod h1:1s6nkUte+oDPoBb+iEo94PyXZERmDNMK5XBUj20ANBU=
 github.com/tillberg/notifywrap v0.0.0-20200923124435-9c3118e691e8 h1:m7doSbKo6ZKxlVuKsBl5jBldJOY4ukbu6bqnDLnDaOg=
 github.com/tillberg/notifywrap v0.0.0-20200923124435-9c3118e691e8/go.mod h1:tkTGK/6085+GRxmsXqp9VJRWv7ZKxnAq2mE11xfVR4Q=
-github.com/tillberg/stringset v0.0.0-20170913192538-82c0c7cea2c5 h1:5NKer8vakgGdcj6vy2BVFW153TB/8l4tFsXN7zuWBfI=
-github.com/tillberg/stringset v0.0.0-20170913192538-82c0c7cea2c5/go.mod h1:fYcF9dZnzutLCGBoA9x0Umi4kqTf5PsSXTW+M4P0qaE=
 github.com/tillberg/stringset v0.0.0-20220429204947-12df33ab1cd6 h1:9QVeacXfCTL1mS2tClma3psYYcOIYSOQn0/BD/viH/Q=
 github.com/tillberg/stringset v0.0.0-20220429204947-12df33ab1cd6/go.mod h1:fYcF9dZnzutLCGBoA9x0Umi4kqTf5PsSXTW+M4P0qaE=
-golang.org/x/sys v0.0.0-20180926160741-c2ed4eda69e7 h1:bit1t3mgdR35yN0cX0G8orgLtOuyL9Wqxa1mccLB0ig=
 golang.org/x/sys v0.0.0-20180926160741-c2ed4eda69e7/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
 golang.org/x/sys v0.0.0-20210320140829-1e4c9ba3b0c4/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
-golang.org/x/sys v0.0.0-20220818161305-2296e01440c6 h1:Sx/u41w+OwrInGdEckYmEuU5gHoGSL4QbDz3S9s6j4U=
-golang.org/x/sys v0.0.0-20220818161305-2296e01440c6/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
-gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
+golang.org/x/sys v0.2.0 h1:ljd4t30dBnAvMZaQCevtY0xLLD0A+bRZXbgLMLU1F/A=
+golang.org/x/sys v0.2.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c h1:dUUwHk2QECo/6vqA44rthZ8ie2QXMNeKRTHCNY2nXvo=
 gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
