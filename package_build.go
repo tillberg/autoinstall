@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"time"
 
@@ -62,7 +63,8 @@ func buildPackage(pkg *Package) {
 
 func buildProgramPackage(pkg *Package) {
 	buildTimer := alog.NewTimer()
-	logger := alog.New(alog.DefaultLogger, alog.Colorify("@(dim:[install]) "), 0)
+	logPrefix := fmt.Sprintf("@(dim:[%s]) ", path.Base(pkg.Name))
+	logger := alog.New(alog.DefaultLogger, alog.Colorify(logPrefix), 0)
 	cmd := exec.Command("go", "install", "-v")
 	cmd.Dir = filepath.Join(goPath, "src", pkg.Name)
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
@@ -84,7 +86,8 @@ func buildProgramPackage(pkg *Package) {
 
 func buildPluginPackage(pkg *Package) {
 	buildTimer := alog.NewTimer()
-	logger := alog.New(alog.DefaultLogger, alog.Colorify("@(dim:[install]) "), 0)
+	logPrefix := fmt.Sprintf("@(dim:[plugin-%s]) ", path.Base(pkg.Name))
+	logger := alog.New(alog.DefaultLogger, alog.Colorify(logPrefix), 0)
 	cmd := exec.Command("go", "install", "-v", "-buildmode=plugin")
 	cmd.Dir = filepath.Join(goPath, "src", pkg.Name)
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
