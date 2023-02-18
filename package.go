@@ -9,7 +9,7 @@ import (
 
 type Package struct {
 	Name            string // Full path of import within GOPATH, including .../vendor/ if present
-	OSArch          OSArch
+	Target          Target
 	State           PackageState // Current state of this Package (idle/building/ready/etc)
 	ShouldBuild     bool
 	PossibleImports *stringset.StringSet // List of all possible imports (vendor-exploded)
@@ -17,11 +17,27 @@ type Package struct {
 }
 
 func (p *Package) Key() string {
-	archStr := p.OSArch.String()
-	if archStr == "local" {
+	targetStr := p.Target.String()
+	if targetStr == "local" {
 		return p.Name
 	}
-	return fmt.Sprintf("%s:%s", p.Name, p.OSArch.String())
+	return fmt.Sprintf("%s:%s", p.Name, targetStr)
+}
+
+type Target struct {
+	OSArch OSArch
+	Mode   string
+}
+
+func (t Target) String() string {
+	osArch := t.OSArch.String()
+	if osArch == "" {
+		return t.Mode
+	}
+	if t.Mode == "" {
+		return osArch
+	}
+	return fmt.Sprintf("%s:%s", osArch, t.Mode)
 }
 
 type OSArch struct {
@@ -44,6 +60,8 @@ func (o OSArch) ZigArchStr() string {
 	switch o.Arch {
 	case "amd64":
 		return "x86_64"
+	case "386":
+		return "i386"
 	default:
 		alog.Panicf("Unknown arch %s", o.Arch)
 	}

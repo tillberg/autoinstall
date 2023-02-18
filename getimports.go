@@ -9,7 +9,7 @@ import (
 	"github.com/tillberg/stringset"
 )
 
-func getPackageImportsRecurse(pName string, osArch OSArch, all *stringset.StringSet, level int) (isCommand bool) {
+func getPackageImportsRecurse(pName string, target Target, all *stringset.StringSet, level int) (isCommand bool) {
 	if beVeryVerbose() {
 		t := alog.NewTimer()
 		defer func() {
@@ -19,9 +19,9 @@ func getPackageImportsRecurse(pName string, osArch OSArch, all *stringset.String
 	}
 	// var buildContext build.Context = build.Default
 	buildContext := build.Default
-	if !osArch.IsLocal() {
-		buildContext.GOOS = osArch.OS
-		buildContext.GOARCH = osArch.Arch
+	if !target.OSArch.IsLocal() {
+		buildContext.GOOS = target.OSArch.OS
+		buildContext.GOARCH = target.OSArch.Arch
 	}
 	bPkg, err := buildContext.Import(pName, goPath, 0)
 	if err != nil {
@@ -39,14 +39,14 @@ func getPackageImportsRecurse(pName string, osArch OSArch, all *stringset.String
 			continue
 		}
 		if all.Add(importName) {
-			getPackageImportsRecurse(importName, osArch, all, level+1)
+			getPackageImportsRecurse(importName, target, all, level+1)
 		}
 	}
 	return true
 }
 
-func getPackageImports(pName string, osArch OSArch) (deps *stringset.StringSet, isCommand bool) {
+func getPackageImports(pName string, target Target) (deps *stringset.StringSet, isCommand bool) {
 	all := stringset.New()
-	isCommand = getPackageImportsRecurse(pName, osArch, all, 0)
+	isCommand = getPackageImportsRecurse(pName, target, all, 0)
 	return all, isCommand
 }

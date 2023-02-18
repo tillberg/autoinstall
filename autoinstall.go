@@ -342,7 +342,7 @@ func shouldRunTests() bool {
 var (
 	autoinstallTargetsFilename = "autoinstall.targets"
 
-	buildExtensions = stringset.New(".go") //, ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
+	buildExtensions = stringset.New(".go", ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
 	buildFileNames  = stringset.New(autoinstallTargetsFilename)
 )
 
@@ -363,7 +363,7 @@ func processPackageTrigger(trigger PackageUpdateTrigger) {
 	targetsFile := filepath.Join(goPathSrcRoot, trigger.FullImportName, autoinstallTargetsFilename)
 	contents, err := ioutil.ReadFile(targetsFile)
 	if err != nil {
-		processPackageTriggerOSArch(trigger, OSArch{})
+		processPackageTriggerTarget(trigger, Target{})
 		return
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(contents))
@@ -372,17 +372,18 @@ func processPackageTrigger(trigger PackageUpdateTrigger) {
 		if trimmed == "" {
 			continue
 		}
-		os, arch, _ := strings.Cut(trimmed, "_")
-		processPackageTriggerOSArch(trigger, OSArch{OS: os, Arch: arch})
+		osArch, mode, _ := strings.Cut(trimmed, ":")
+		os, arch, _ := strings.Cut(osArch, "_")
+		processPackageTriggerTarget(trigger, Target{OSArch: OSArch{OS: os, Arch: arch}, Mode: mode})
 	}
 }
 
-func processPackageTriggerOSArch(trigger PackageUpdateTrigger, osArch OSArch) {
+func processPackageTriggerTarget(trigger PackageUpdateTrigger, target Target) {
 	t := alog.NewTimer()
 	fullImportName := trigger.FullImportName
 	pkg := &Package{
 		Name:        fullImportName,
-		OSArch:      osArch,
+		Target:      target,
 		ShouldBuild: true,
 		FileChange:  trigger.FileChange,
 	}
@@ -411,7 +412,7 @@ func processPackageTriggerOSArch(trigger PackageUpdateTrigger, osArch OSArch) {
 		pkg.ShouldBuild = anyMatch
 	}
 	if pkg.ShouldBuild {
-		deps, isCommand := getPackageImports(fullImportName, osArch)
+		deps, isCommand := getPackageImports(fullImportName, target)
 		if isCommand {
 			allPossible := stringset.New()
 			for _, importName := range deps.All() {

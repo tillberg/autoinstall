@@ -54,13 +54,40 @@ func packageIsProgram(pkg *Package) bool {
 }
 
 func buildPackage(pkg *Package) {
-	if Opts.BuildPlugins && !packageIsProgram(pkg) {
+	if pkg.Target.Mode == "dll" {
+		buildDLLPackage(pkg)
+	} else if Opts.BuildPlugins && !packageIsProgram(pkg) {
 		buildPluginPackage(pkg)
 	} else {
 		buildProgramPackage(pkg)
 	}
 }
 
+func buildDLLPackage(pkg *Package) {
+	buildTimer := alog.NewTimer()
+	logPrefix := fmt.Sprintf("@(dim:[%s]) ", path.Base(pkg.Name))
+	logger := alog.New(alog.DefaultLogger, alog.Colorify(logPrefix), 0)
+	outdir := filepath.Join(goPath, "bin", pkg.Target.OSArch.String())
+	alog.BailIf(os.MkdirAll(outdir, 0755))
+	outpath := filepath.Join(outdir, filepath.Base(pkg.Name+".dll"))
+	cmd := exec.Command("go", "build", "-v", "-buildmode=c-shared", "-o", outpath)
+	cmd.Dir = filepath.Join(goPath, "src", pkg.Name)
+	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
+	cmd.Stdout = logger
+	cmd.Stderr = logger
+	cmd.Env = getBuildEnv(pkg)
+	err := cmd.Run()
+	success := err == nil
+	if success {
+		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:program) @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+	} else {
+		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail program %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+	}
+	buildDone <- BuildResult{
+		Package: pkg,
+		Success: success,
+	}
+}
 func buildProgramPackage(pkg *Package) {
 	buildTimer := alog.NewTimer()
 	logPrefix := fmt.Sprintf("@(dim:[%s]) ", path.Base(pkg.Name))
@@ -109,11 +136,13 @@ func buildPluginPackage(pkg *Package) {
 
 func getBuildEnv(pkg *Package) []string {
 	env := os.Environ()
-	if !pkg.OSArch.IsLocal() {
-		env = append(env, "GOOS="+pkg.OSArch.OS)
-		env = append(env, "GOARCH="+pkg.OSArch.Arch)
+	osArch := pkg.Target.OSArch
+	if !osArch.IsLocal() {
+		env = append(env, "GOOS="+osArch.OS)
+		env = append(env, "GOARCH="+osArch.Arch)
+		env = append(env, "CGO_ENABLED=1")
 		if Opts.ZigCC {
-			target := fmt.Sprintf("%s-%s", pkg.OSArch.ZigArchStr(), pkg.OSArch.OS)
+			target := fmt.Sprintf("%s-%s", osArch.ZigArchStr(), osArch.OS)
 			env = append(env, "CC=zig cc -target "+target)
 			env = append(env, "CXX=zig c++ -target "+target)
 		}
