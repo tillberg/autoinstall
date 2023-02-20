@@ -65,7 +65,16 @@ func buildPackage(pkg *Package) {
 	}
 }
 
-func quotedIfNeeded(str string) string {
+func quoteEnvIfNeeded(str string) string {
+	if strings.ContainsAny(str, " \n\t\"") {
+		name, value, _ := strings.Cut(str, "=")
+		return fmt.Sprintf("%s=%q", name, value)
+	} else {
+		return str
+	}
+}
+
+func quoteArgIfNeeded(str string) string {
 	if strings.ContainsAny(str, " \n\t\"") {
 		return strconv.Quote(str)
 	} else {
@@ -78,10 +87,10 @@ func logBuildCommand(logger *alog.Logger, dir string, env []string, args []strin
 		var s strings.Builder
 		fmt.Fprintf(&s, "cd %s &&", dir)
 		for _, v := range env {
-			fmt.Fprintf(&s, " %s", quotedIfNeeded(v))
+			fmt.Fprintf(&s, " %s", quoteEnvIfNeeded(v))
 		}
 		for _, v := range args {
-			fmt.Fprintf(&s, " %s", quotedIfNeeded(v))
+			fmt.Fprintf(&s, " %s", quoteArgIfNeeded(v))
 		}
 		logger.Log(s.String())
 	}
