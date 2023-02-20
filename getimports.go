@@ -10,7 +10,7 @@ import (
 )
 
 func getPackageImportsRecurse(pName string, target Target, all *stringset.StringSet, level int) (isCommand bool) {
-	if beVeryVerbose() {
+	if Opts.VeryVerbose {
 		t := alog.NewTimer()
 		defer func() {
 			durStr := t.FormatElapsedColor(100*time.Millisecond, 200*time.Millisecond)

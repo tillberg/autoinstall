@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tillberg/alog"
@@ -63,6 +65,28 @@ func buildPackage(pkg *Package) {
 	}
 }
 
+func quotedIfNeeded(str string) string {
+	if strings.ContainsAny(str, " \n\t\"") {
+		return strconv.Quote(str)
+	} else {
+		return str
+	}
+}
+
+func logBuildCommand(logger *alog.Logger, dir string, env []string, args []string) {
+	if Opts.Verbose {
+		var s strings.Builder
+		fmt.Fprintf(&s, "cd %s &&", dir)
+		for _, v := range env {
+			fmt.Fprintf(&s, " %s", quotedIfNeeded(v))
+		}
+		for _, v := range args {
+			fmt.Fprintf(&s, " %s", quotedIfNeeded(v))
+		}
+		logger.Log(s.String())
+	}
+}
+
 func buildDLLPackage(pkg *Package) {
 	buildTimer := alog.NewTimer()
 	logPrefix := fmt.Sprintf("@(dim:[%s]) ", path.Base(pkg.Name))
@@ -75,7 +99,9 @@ func buildDLLPackage(pkg *Package) {
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	cmd.Env = getBuildEnv(pkg)
+	env := getBuildEnv(pkg)
+	cmd.Env = append(os.Environ(), env...)
+	logBuildCommand(logger, cmd.Dir, env, cmd.Args)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -97,7 +123,9 @@ func buildProgramPackage(pkg *Package) {
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	cmd.Env = getBuildEnv(pkg)
+	env := getBuildEnv(pkg)
+	cmd.Env = append(os.Environ(), env...)
+	logBuildCommand(logger, cmd.Dir, env, cmd.Args)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -120,7 +148,9 @@ func buildPluginPackage(pkg *Package) {
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	cmd.Env = getBuildEnv(pkg)
+	env := getBuildEnv(pkg)
+	cmd.Env = append(os.Environ(), env...)
+	logBuildCommand(logger, cmd.Dir, env, cmd.Args)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -134,8 +164,7 @@ func buildPluginPackage(pkg *Package) {
 	}
 }
 
-func getBuildEnv(pkg *Package) []string {
-	env := os.Environ()
+func getBuildEnv(pkg *Package) (env []string) {
 	osArch := pkg.Target.OSArch
 	if !osArch.IsLocal() {
 		env = append(env, "GOOS="+osArch.OS)
