@@ -194,5 +194,9 @@ func getExtraBuildArgs() []string {
 		args = append(args, "-ldflags")
 		args = append(args, Opts.LDFlags)
 	}
+	if Opts.Tags != "" {
+		args = append(args, "-tags")
+		args = append(args, Opts.Tags)
+	}
 	return args
 }
