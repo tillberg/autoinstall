@@ -108,9 +108,9 @@ func buildDLLPackage(pkg *Package) {
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	env := getBuildEnv(pkg)
-	cmd.Env = append(os.Environ(), env...)
-	logBuildCommand(logger, cmd.Dir, env, cmd.Args)
+	var overrides []string
+	cmd.Env, overrides = getBuildEnv(pkg)
+	logBuildCommand(logger, cmd.Dir, overrides, cmd.Args)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -132,9 +132,9 @@ func buildProgramPackage(pkg *Package) {
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	env := getBuildEnv(pkg)
-	cmd.Env = append(os.Environ(), env...)
-	logBuildCommand(logger, cmd.Dir, env, cmd.Args)
+	var overrides []string
+	cmd.Env, overrides = getBuildEnv(pkg)
+	logBuildCommand(logger, cmd.Dir, overrides, cmd.Args)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -157,9 +157,9 @@ func buildPluginPackage(pkg *Package) {
 	cmd.Args = append(cmd.Args, getExtraBuildArgs()...)
 	cmd.Stdout = logger
 	cmd.Stderr = logger
-	env := getBuildEnv(pkg)
-	cmd.Env = append(os.Environ(), env...)
-	logBuildCommand(logger, cmd.Dir, env, cmd.Args)
+	var overrides []string
+	cmd.Env, overrides = getBuildEnv(pkg)
+	logBuildCommand(logger, cmd.Dir, overrides, cmd.Args)
 	err := cmd.Run()
 	success := err == nil
 	if success {
@@ -173,19 +173,26 @@ func buildPluginPackage(pkg *Package) {
 	}
 }
 
-func getBuildEnv(pkg *Package) (env []string) {
+func getBuildEnv(pkg *Package) (env, overrides []string) {
 	osArch := pkg.Target.OSArch
-	if !osArch.IsLocal() {
-		env = append(env, "GOOS="+osArch.OS)
-		env = append(env, "GOARCH="+osArch.Arch)
-		env = append(env, "CGO_ENABLED=1")
-		if Opts.ZigCC {
-			target := fmt.Sprintf("%s-%s", osArch.ZigArchStr(), osArch.OS)
-			env = append(env, "CC=zig cc -target "+target)
-			env = append(env, "CXX=zig c++ -target "+target)
+	for _, line := range os.Environ() {
+		if !strings.HasPrefix(line, "GO111MODULE=") {
+			env = append(env, line)
 		}
 	}
-	return env
+	overrides = append(overrides, "GO111MODULE=auto")
+	if !osArch.IsLocal() {
+		overrides = append(overrides, "GOOS="+osArch.OS)
+		overrides = append(overrides, "GOARCH="+osArch.Arch)
+		overrides = append(overrides, "CGO_ENABLED=1")
+		if Opts.ZigCC {
+			target := fmt.Sprintf("%s-%s", osArch.ZigArchStr(), osArch.OS)
+			overrides = append(overrides, "CC=zig cc -target "+target)
+			overrides = append(overrides, "CXX=zig c++ -target "+target)
+		}
+	}
+	env = append(env, overrides...)
+	return env, overrides
 }
 
 func getExtraBuildArgs() []string {

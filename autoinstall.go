@@ -454,6 +454,7 @@ func processPathTriggers(notifyChan <-chan *notifywrap.EventInfo) {
 }
 
 func main() {
+	os.Setenv("GO111MODULE", "off")
 	sighup := make(chan os.Signal)
 	signal.Notify(sighup, syscall.SIGHUP)
 	_, err := flags.ParseArgs(&Opts, os.Args)
