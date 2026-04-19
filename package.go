@@ -61,7 +61,7 @@ func (o OSArch) ZigArchStr() string {
 	case "amd64":
 		return "x86_64"
 	case "386":
-		return "i386"
+		return "x86"
 	default:
 		alog.Panicf("Unknown arch %s", o.Arch)
 	}

@@ -404,7 +404,7 @@ func processPackageTriggerTarget(trigger PackageUpdateTrigger, target Target) {
 	if pkg.ShouldBuild && len(Opts.Prefix) > 0 {
 		anyMatch := false
 		for _, prefix := range Opts.Prefix {
-			if fullImportName == prefix || strings.HasPrefix(fullImportName, prefix+"/") {
+			if fullImportName == prefix || strings.HasPrefix(fullImportName, prefix+string(filepath.Separator)) {
 				anyMatch = true
 				break
 			}
@@ -455,7 +455,7 @@ func processPathTriggers(notifyChan <-chan *notifywrap.EventInfo) {
 
 func main() {
 	os.Setenv("GO111MODULE", "off")
-	sighup := make(chan os.Signal)
+	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	_, err := flags.ParseArgs(&Opts, os.Args)
 	if err != nil {
