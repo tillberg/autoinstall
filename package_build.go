@@ -114,9 +114,17 @@ func buildDLLPackage(pkg *Package) {
 	err := cmd.Run()
 	success := err == nil
 	if success {
-		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:program) @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+		logger.Printf(
+			"@(dim:[)%s@(dim:]) success @(dim:program) @(bright,blue:%s)\n",
+			buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second),
+			pkg.Key(),
+		)
 	} else {
-		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail program %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+		logger.Printf(
+			"@(dim:[)%s@(dim:])    @(dim:fail program %s)\n",
+			buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second),
+			pkg.Key(),
+		)
 	}
 	buildDone <- BuildResult{
 		Package: pkg,
@@ -138,9 +146,31 @@ func buildProgramPackage(pkg *Package) {
 	err := cmd.Run()
 	success := err == nil
 	if success {
-		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:program) @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+		logger.Printf(
+			"@(dim:[)%s@(dim:]) success @(dim:program) @(bright,blue:%s)\n",
+			buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second),
+			pkg.Key(),
+		)
 	} else {
-		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail program %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+		logger.Printf(
+			"@(dim:[)%s@(dim:])    @(dim:fail program %s)\n",
+			buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second),
+			pkg.Key(),
+		)
+	}
+	if success && Opts.HardLinkDir != "" {
+		srcPath := filepath.Join(goPath, "bin", filepath.Base(pkg.Name))
+		if !pkg.Target.OSArch.IsLocal() {
+			srcPath = filepath.Join(srcPath, pkg.Target.OSArch.String())
+		}
+		hardLinkDir := Opts.HardLinkDir
+		if !pkg.Target.OSArch.IsLocal() {
+			hardLinkDir = filepath.Join(hardLinkDir, pkg.Target.OSArch.String())
+		}
+		alog.BailIf(os.MkdirAll(hardLinkDir, 0755))
+		hardLinkPath := filepath.Join(hardLinkDir, filepath.Base(pkg.Name))
+		os.Remove(hardLinkPath)
+		alog.BailIf(os.Link(srcPath, hardLinkPath))
 	}
 	buildDone <- BuildResult{
 		Package: pkg,
@@ -163,9 +193,17 @@ func buildPluginPackage(pkg *Package) {
 	err := cmd.Run()
 	success := err == nil
 	if success {
-		logger.Printf("@(dim:[)%s@(dim:]) success @(dim:plugin)  @(bright,blue:%s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+		logger.Printf(
+			"@(dim:[)%s@(dim:]) success @(dim:plugin)  @(bright,blue:%s)\n",
+			buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second),
+			pkg.Key(),
+		)
 	} else {
-		logger.Printf("@(dim:[)%s@(dim:])    @(dim:fail plugin  %s)\n", buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second), pkg.Key())
+		logger.Printf(
+			"@(dim:[)%s@(dim:])    @(dim:fail plugin  %s)\n",
+			buildTimer.FormatElapsedColor(2*time.Second, 10*time.Second),
+			pkg.Key(),
+		)
 	}
 	buildDone <- BuildResult{
 		Package: pkg,

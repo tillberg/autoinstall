@@ -40,6 +40,7 @@ var Opts struct {
 	LDFlags        string   `long:"ldflags" description:"Pass the -ldflags to go install with this value"`
 	BuildPlugins   bool     `long:"build-plugins" description:"Build plugins too"`
 	ZigCC          bool     `long:"zigcc" description:"Use zig toolchain for cross-compiling CGO"`
+	HardLinkDir    string   `long:"hard-link-dir" description:"Hard link binaries to this directory"`
 }
 
 var goPath = (func() string {
@@ -342,8 +343,22 @@ func shouldRunTests() bool {
 var (
 	autoinstallTargetsFilename = "autoinstall.targets"
 
-	buildExtensions = stringset.New(".go", ".c", ".cc", ".cxx", ".cpp", ".h", ".hh", ".hpp", ".hxx", ".s", ".swig", ".swigcxx", ".syso")
-	buildFileNames  = stringset.New(autoinstallTargetsFilename)
+	buildExtensions = stringset.New(
+		".go",
+		".c",
+		".cc",
+		".cxx",
+		".cpp",
+		".h",
+		".hh",
+		".hpp",
+		".hxx",
+		".s",
+		".swig",
+		".swigcxx",
+		".syso",
+	)
+	buildFileNames = stringset.New(autoinstallTargetsFilename)
 )
 
 type PackageUpdateTrigger struct {
@@ -447,7 +462,11 @@ func processPathTriggers(notifyChan <-chan *notifywrap.EventInfo) {
 			alog.Bail(err)
 		}
 		if beVeryVerbose() {
-			alog.Printf("@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n", fullImportName, pathEvent.Path)
+			alog.Printf(
+				"@(dim:Triggering module) @(cyan:%s) @(dim:due to update of) @(cyan:%s)\n",
+				fullImportName,
+				pathEvent.Path,
+			)
 		}
 		packageUpdates.In <- PackageUpdateTrigger{FullImportName: fullImportName, FileChange: true}
 	}
