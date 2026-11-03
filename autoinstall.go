@@ -74,7 +74,6 @@ var numUnready = 0
 var numBuildsActive = 0
 var numPackageBuildsActive = 0
 var startupLogger *alog.Logger
-var neverChan <-chan time.Time
 var lastModuleUpdateTime time.Time
 
 func numWorkersActive() int {
@@ -334,10 +333,6 @@ func beVerbose() bool {
 
 func beVeryVerbose() bool {
 	return (finishedInitialPass && Opts.Verbose) || Opts.VeryVerbose
-}
-
-func shouldRunTests() bool {
-	return finishedInitialPass && Opts.RunTests
 }
 
 var (
