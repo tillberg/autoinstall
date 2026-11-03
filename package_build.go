@@ -171,6 +171,7 @@ func buildProgramPackage(pkg *Package) {
 		hardLinkPath := filepath.Join(hardLinkDir, filepath.Base(pkg.Name))
 		os.Remove(hardLinkPath)
 		alog.BailIf(os.Link(srcPath, hardLinkPath))
+		logger.Printf("@(dim:hard linked at) @(cyan:%s)\n", hardLinkPath)
 	}
 	buildDone <- BuildResult{
 		Package: pkg,
